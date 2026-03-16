@@ -1,0 +1,22 @@
+# Core pipeline
+assemblyai
+librosa
+ffmpeg-python
+yt-dlp
+
+# API (optional)
+fastapi
+uvicorn
+
+# LLM
+openai
+
+# Testing
+pytest
+pytest-cov
+
+# Static analysis
+ruff
+mypy
+bandit
+pre-commit

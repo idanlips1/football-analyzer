@@ -1,1 +1,37 @@
-football_highlights_project.md
+# Virtual environment
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+
+# Environment variables
+.env
+
+# Pipeline workspace (generated at runtime)
+pipeline_workspace/
+!pipeline_workspace/.gitkeep
+
+# Testing / Coverage
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Static analysis caches
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+
+
+football_highlights_pipeline.svg

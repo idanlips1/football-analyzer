@@ -201,9 +201,7 @@ Break your development into these checkpoints. **Test each one before moving on.
 **Checkpoint 1 — Scaffolding & Ingestion**
 - Project structure is set up (folders, `requirements.txt`, logging config, pre-commit hooks, `Dockerfile`).
 - Static analyzer is configured and runs on every commit.
-- Can accept a video file (or YouTube URL), download it, extract metadata, and save it to the workspace folder.
-- Basic CLI/API argument parsing works.
-- First unit tests are written (e.g., metadata validation).
+- Can accept a video file (or YouTube URL), download it, and save it to the workspace folder.
 
 **Checkpoint 2 — Transcription & Speaker Identification**
 - Audio extraction from video works.
