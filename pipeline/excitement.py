@@ -138,9 +138,9 @@ def _classify_batch_with_llm(
 
     Retries once if indices are missing. Falls back to defaults with log.warning.
     """
-    if not AZURE_OPENAI_API_KEY or not AZURE_OPENAI_ENDPOINT:
+    if not AZURE_OPENAI_API_KEY or not AZURE_OPENAI_ENDPOINT or not AZURE_OPENAI_DEPLOYMENT:
         raise ExcitementError(
-            "AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT must be set in your .env file"
+            "AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, and AZURE_OPENAI_DEPLOYMENT must be set in your .env file"
         )
 
     utterances_payload = [
