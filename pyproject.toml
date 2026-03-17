@@ -15,3 +15,6 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--cov=pipeline --cov=models --cov=config --cov=utils --cov-report=term-missing"
+
+[tool.bandit]
+exclude_dirs = ["tests"]
