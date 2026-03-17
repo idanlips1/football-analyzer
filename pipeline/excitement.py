@@ -27,7 +27,7 @@ from config.settings import (
     EXCITEMENT_LLM_WEIGHT,
     EXCITEMENT_THRESHOLD,
 )
-from models.events import EDREntry, EventType
+from models.events import EventType, ExcitementEntry
 from utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -242,15 +242,15 @@ def _compute_final_score(energy: float, keyword_score: float, llm_score: float) 
 def _build_edr_entry(
     item: dict[str, Any],
     classification: dict[str, Any],
-) -> EDREntry:
-    """Combine local analysis + LLM result into one EDREntry."""
+) -> ExcitementEntry:
+    """Combine local analysis + LLM result into one ExcitementEntry."""
     utt = item["utterance"]
     energy = item["energy"]
     keywords = item["keywords"]
     kw_score = _keyword_score(keywords)
     llm_score = float(classification["excitement_score"])
     final = _compute_final_score(energy, kw_score, llm_score)
-    return EDREntry(
+    return ExcitementEntry(
         timestamp_start=utt["start"] / 1000.0,
         timestamp_end=utt["end"] / 1000.0,
         commentator_energy=energy,

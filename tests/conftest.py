@@ -20,6 +20,8 @@ def tmp_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     workspace.mkdir()
     monkeypatch.setattr("config.settings.PIPELINE_WORKSPACE", workspace)
     monkeypatch.setattr("pipeline.ingestion.PIPELINE_WORKSPACE", workspace)
+    monkeypatch.setattr("pipeline.edr.PIPELINE_WORKSPACE", workspace)
+    monkeypatch.setattr("pipeline.filtering.PIPELINE_WORKSPACE", workspace)
     return workspace
 
 
