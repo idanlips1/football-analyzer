@@ -43,9 +43,19 @@ def filter_edr(
     workspace = PIPELINE_WORKSPACE / video_id
     output_path = workspace / FILTERED_EDR_FILENAME
 
+    # Normalise requested event types so that cache lookups are independent of
+    # list ordering and stable across equivalent requests.
+    requested_event_types = sorted(str(et) for et in event_types)
+
     if output_path.exists():
-        log.info("Stage 4b cache hit — loading existing filtered_edr.json")
-        return json.loads(output_path.read_text())  # type: ignore[no-any-return]
+        cached = json.loads(output_path.read_text())
+        cached_event_types = cached.get("event_types")
+        if cached_event_types == requested_event_types:
+            log.info("Stage 4b cache hit — loading existing filtered_edr.json")
+            return cached  # type: ignore[no-any-return]
+        log.info(
+            "Stage 4b cache exists but event_types differ — recomputing filter"
+        )
 
     edr_path = workspace / EDR_FILENAME
     if not edr_path.exists():
@@ -63,6 +73,7 @@ def filter_edr(
         "workspace": str(workspace),
         "clip_count": len(filtered),
         "total_duration_seconds": total_duration,
+        "event_types": requested_event_types,
         "clips": clips,
     }
 
