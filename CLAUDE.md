@@ -27,7 +27,12 @@ mypy .
 bandit -r . -c pyproject.toml
 ```
 
-**Environment:** Requires `.env` with `ASSEMBLYAI_API_KEY=<key>` for Stage 2.
+**Environment:** Requires `.env` with:
+- `ASSEMBLYAI_API_KEY=<key>` — Stage 2 (transcription)
+- `AZURE_OPENAI_API_KEY=<key>` — Stage 3 (excitement analysis)
+- `AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com` — Stage 3
+- `AZURE_OPENAI_DEPLOYMENT=<deployment-name>` — Stage 3
+- `AZURE_OPENAI_API_VERSION=2024-10-21` — Stage 3 (optional, defaults to `2024-10-21`)
 
 ## Architecture
 
