@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 from config.settings import PIPELINE_WORKSPACE
-from models.events import EDREntry, EventType
+from models.events import EDREntry, EventType, seconds_to_timestamp
 from utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -53,9 +53,7 @@ def filter_edr(
         if cached_event_types == requested_event_types:
             log.info("Stage 4b cache hit — loading existing filtered_edr.json")
             return cached  # type: ignore[no-any-return]
-        log.info(
-            "Stage 4b cache exists but event_types differ — recomputing filter"
-        )
+        log.info("Stage 4b cache exists but event_types differ — recomputing filter")
 
     edr_path = workspace / EDR_FILENAME
     if not edr_path.exists():
@@ -73,6 +71,7 @@ def filter_edr(
         "workspace": str(workspace),
         "clip_count": len(filtered),
         "total_duration_seconds": total_duration,
+        "total_duration_display": seconds_to_timestamp(total_duration),
         "event_types": requested_event_types,
         "clips": clips,
     }

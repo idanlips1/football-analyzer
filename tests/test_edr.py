@@ -76,17 +76,15 @@ class TestMergeWindows:
         assert entry.video_id == "test_video"
 
     def test_non_adjacent_windows_stay_separate(self) -> None:
-        # Gap of 10 s between windows; default threshold is 2 s
         w1 = _make_window(0, 5000, score=0.5)
         w2 = _make_window(15000, 20000, score=0.6)
         result = merge_windows([w1, w2])
         assert len(result) == 2
 
     def test_adjacent_windows_within_gap_are_merged(self) -> None:
-        # End of w1 at 5 s; start of w2 at 6 s → gap = 1 s ≤ default 2 s
         w1 = _make_window(0, 5000, score=0.5)
         w2 = _make_window(6000, 10000, score=0.6)
-        result = merge_windows([w1, w2])
+        result = merge_windows([w1, w2], gap_seconds=2.0)
         assert len(result) == 1
         assert result[0].start_seconds == pytest.approx(0.0)
         assert result[0].end_seconds == pytest.approx(10.0)
@@ -94,41 +92,40 @@ class TestMergeWindows:
     def test_merge_takes_max_score(self) -> None:
         w1 = _make_window(0, 5000, score=0.4)
         w2 = _make_window(6000, 10000, score=0.9)
-        result = merge_windows([w1, w2])
+        result = merge_windows([w1, w2], gap_seconds=2.0)
         assert result[0].score == pytest.approx(0.9)
 
     def test_merge_takes_max_energy_peak(self) -> None:
         w1 = _make_window(0, 5000, score=0.5, energy_peak=0.3)
         w2 = _make_window(6000, 10000, score=0.5, energy_peak=0.8)
-        result = merge_windows([w1, w2])
+        result = merge_windows([w1, w2], gap_seconds=2.0)
         assert result[0].energy_peak == pytest.approx(0.8)
 
     def test_merge_unions_keyword_hits(self) -> None:
         w1 = _make_window(0, 5000, score=0.5, keyword_hits=["goal"])
         w2 = _make_window(6000, 10000, score=0.5, keyword_hits=["incredible"])
-        result = merge_windows([w1, w2])
+        result = merge_windows([w1, w2], gap_seconds=2.0)
         assert set(result[0].keyword_hits) == {"goal", "incredible"}
 
     def test_merge_takes_event_type_of_highest_scoring_window(self) -> None:
         w1 = _make_window(0, 5000, score=0.4, event_type="free_kick")
         w2 = _make_window(4000, 9000, score=0.9, event_type="goal")
-        result = merge_windows([w1, w2])
+        result = merge_windows([w1, w2], gap_seconds=2.0)
         assert len(result) == 1
         assert result[0].event_type == EventType.GOAL
 
     def test_custom_gap_threshold_respected(self) -> None:
-        # Gap of 3 s; custom threshold of 5 s → should merge
         w1 = _make_window(0, 5000, score=0.5)
         w2 = _make_window(8000, 12000, score=0.6)
         result_default = merge_windows([w1, w2], gap_seconds=2.0)
         result_custom = merge_windows([w1, w2], gap_seconds=5.0)
-        assert len(result_default) == 2  # default 2 s < 3 s gap → stays separate
-        assert len(result_custom) == 1  # custom 5 s ≥ 3 s gap → merged
+        assert len(result_default) == 2
+        assert len(result_custom) == 1
 
     def test_overlapping_windows_merged(self) -> None:
         w1 = _make_window(0, 8000, score=0.5)
-        w2 = _make_window(5000, 12000, score=0.7)  # overlaps w1
-        result = merge_windows([w1, w2])
+        w2 = _make_window(5000, 12000, score=0.7)
+        result = merge_windows([w1, w2], gap_seconds=2.0)
         assert len(result) == 1
         assert result[0].end_seconds == pytest.approx(12.0)
 
@@ -144,6 +141,19 @@ class TestMergeWindows:
         w = _make_window(0, 5000, score=0.5, event_type="xyzzy_totally_invalid")
         result = merge_windows([w])
         assert result[0].event_type == EventType.UNKNOWN
+
+    def test_long_clip_is_capped(self) -> None:
+        """Merged clip exceeding max_clip_seconds is trimmed around peak."""
+        w1 = _make_window(0, 30000, score=0.4)
+        w2 = _make_window(31000, 80000, score=0.9)
+        result = merge_windows([w1, w2], gap_seconds=2.0, max_clip_seconds=45.0)
+        assert len(result) == 1
+        assert result[0].duration <= 45.0 + 0.01
+
+    def test_short_clip_not_affected_by_cap(self) -> None:
+        w = _make_window(0, 10000, score=0.8)
+        result = merge_windows([w], max_clip_seconds=45.0)
+        assert result[0].duration == pytest.approx(10.0)
 
 
 # ── TestSelectClips ───────────────────────────────────────────────────────────
@@ -180,7 +190,6 @@ class TestSelectClips:
     def test_selects_highest_scoring_clips_first(self) -> None:
         low = _make_entry(0, 20, 0.3)
         high = _make_entry(30, 50, 0.9)
-        # Budget fits only one 20 s clip; high-score clip should win
         result = select_clips([low, high], budget_seconds=25.0)
         assert high in result
         assert low not in result
@@ -212,14 +221,11 @@ class TestSelectClips:
         assert total <= 20.0
 
     def test_clip_that_would_overflow_budget_is_skipped_not_truncated(self) -> None:
-        # clip A: 7 s; clip B: 6 s; budget=10 s
-        # Greedy: A (score 0.9, 7 s) → total=7. B (score 0.8, 6 s) → 7+6=13 > 10, skip.
         clip_a = _make_entry(0, 7, 0.9)
         clip_b = _make_entry(10, 16, 0.8)
         result = select_clips([clip_a, clip_b], budget_seconds=10.0)
         assert clip_a in result
         assert clip_b not in result
-        # B is absent entirely — not truncated
         for e in result:
             assert e.duration == pytest.approx(e.end_seconds - e.start_seconds)
 
@@ -237,7 +243,14 @@ class TestBuildEdr:
     def test_returns_valid_result_dict(self, tmp_workspace: Path) -> None:
         data = _make_excitement_data(tmp_workspace, [_make_window(0, 10000, 0.8)])
         result = build_edr(data)
-        for key in ("video_id", "workspace", "clip_count", "total_duration_seconds", "clips"):
+        for key in (
+            "video_id",
+            "workspace",
+            "clip_count",
+            "total_duration_seconds",
+            "total_duration_display",
+            "clips",
+        ):
             assert key in result
 
     def test_edr_json_is_valid_and_matches_return(self, tmp_workspace: Path) -> None:
@@ -259,8 +272,8 @@ class TestBuildEdr:
             return original(*args, **kwargs)
 
         monkeypatch.setattr(edr_module, "merge_windows", counting_merge)
-        build_edr(data)  # first call: computes
-        build_edr(data)  # second call: cache hit
+        build_edr(data)
+        build_edr(data)
         assert call_count[0] == 1
 
     def test_cache_hit_returns_same_result(self, tmp_workspace: Path) -> None:
@@ -275,8 +288,14 @@ class TestBuildEdr:
             build_edr(data)
 
     def test_respects_default_budget(self, tmp_workspace: Path) -> None:
-        # 20 windows of 15 s each = 300 s total → should be cut to ≤ 120 s
-        windows = [_make_window(i * 20000, i * 20000 + 15000, score=0.8) for i in range(20)]
+        windows = [_make_window(i * 20000, i * 20000 + 15000, score=0.8) for i in range(50)]
         data = _make_excitement_data(tmp_workspace, windows)
         result = build_edr(data)
-        assert result["total_duration_seconds"] <= 120.0
+        assert result["total_duration_seconds"] <= 600.0
+
+    def test_clip_timestamps_are_hh_mm_ss(self, tmp_workspace: Path) -> None:
+        data = _make_excitement_data(tmp_workspace, [_make_window(3661000, 3665000, 0.8)])
+        result = build_edr(data)
+        clip = result["clips"][0]
+        assert clip["start_seconds"] == "01:01:01"
+        assert clip["end_seconds"] == "01:01:05"

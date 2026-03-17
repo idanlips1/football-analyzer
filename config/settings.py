@@ -25,10 +25,16 @@ AZURE_OPENAI_ENDPOINT: str = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
 AZURE_OPENAI_API_VERSION: str = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21")
 AZURE_OPENAI_DEPLOYMENT: str = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "")
 
+# Stage 3 — Excitement analysis (OpenAI fallback)
+# If Azure settings are not provided, Stage 3 can fall back to OpenAI directly.
+OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "")
+# Model name for OpenAI chat completions when using OPENAI_API_KEY.
+OPENAI_MODEL: str = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
+
 # Scoring weights (must sum to 1.0 when scaled consistently)
-EXCITEMENT_ENERGY_WEIGHT: float = 0.25
-EXCITEMENT_KEYWORD_WEIGHT: float = 0.35
-EXCITEMENT_LLM_WEIGHT: float = 0.40
+EXCITEMENT_ENERGY_WEIGHT: float = 0.20
+EXCITEMENT_KEYWORD_WEIGHT: float = 0.30
+EXCITEMENT_LLM_WEIGHT: float = 0.50
 
 # Threshold for include_in_highlights (scale 0–10)
 EXCITEMENT_THRESHOLD: float = 5.0
@@ -36,5 +42,11 @@ EXCITEMENT_THRESHOLD: float = 5.0
 # LLM batching
 EXCITEMENT_BATCH_SIZE: int = 20
 
-# Target highlights length
-DEFAULT_HIGHLIGHTS_DURATION_SECONDS = 120
+# Target highlights length (10 minutes)
+DEFAULT_HIGHLIGHTS_DURATION_SECONDS: float = 600.0
+
+# Merged clip duration cap — clips longer than this are split during merging
+MAX_CLIP_DURATION_SECONDS: float = 45.0
+
+# Merge gap — consecutive excited utterances within this window are joined
+MERGE_GAP_SECONDS: float = 5.0

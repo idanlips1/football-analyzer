@@ -27,6 +27,10 @@ pytest
 
 The EDR scoring/merging logic (`pipeline/edr.py`) and event filtering (`pipeline/filtering.py`) were developed using Test-Driven Development. Tests in `tests/test_edr.py` and `tests/test_filtering.py` were written first.
 
+## Code style
+
+We use type annotations on all functions. See [CONTRIBUTING.md](CONTRIBUTING.md) for a short guide.
+
 ## Static Analysis
 
 Runs automatically on every commit via pre-commit hooks (ruff, mypy, bandit). To run manually:

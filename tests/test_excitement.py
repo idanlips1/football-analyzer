@@ -19,9 +19,12 @@ from models.events import EventType
 from pipeline.excitement import (
     ExcitementError,
     _classify_batch_with_llm,
+    _compute_baseline_energy,
     _compute_energy,
+    _format_match_time,
     _keyword_score,
     _match_keywords,
+    _normalize_energy,
     analyze_excitement,
 )
 
@@ -104,6 +107,7 @@ def _patch_azure_settings() -> Iterator[None]:
     with (
         patch("pipeline.excitement.AZURE_OPENAI_API_KEY", "test-key"),
         patch("pipeline.excitement.AZURE_OPENAI_ENDPOINT", "https://test.openai.azure.com"),
+        patch("pipeline.excitement.AZURE_OPENAI_DEPLOYMENT", "test-deployment"),
     ):
         yield
 
@@ -134,7 +138,6 @@ class TestKeywordMatching:
         assert score == KEYWORD_WEIGHTS["goal"]
 
     def test_keyword_score_capped_at_one(self) -> None:
-        # goal=1.0, incredible=0.95, unbelievable=0.95 → sum > 1.0
         score = _keyword_score(["goal", "incredible", "unbelievable"])
         assert score == 1.0
 
@@ -155,7 +158,7 @@ class TestComputeEnergy:
         ):
             result = _compute_energy(audio, 0.0, 1.0)
         assert isinstance(result, float)
-        assert 0.0 <= result <= 1.0
+        assert result >= 0.0
 
     def test_silent_segment_returns_low(self, tmp_path: Path) -> None:
         audio = tmp_path / "audio.wav"
@@ -178,18 +181,62 @@ class TestComputeEnergy:
         assert result == 0.0
         mock_load.assert_not_called()
 
-    def test_energy_clamped_to_one(self, tmp_path: Path) -> None:
+
+# ── TestNormalizeEnergy ───────────────────────────────────────────────────────
+
+
+class TestNormalizeEnergy:
+    def test_average_energy_yields_half(self) -> None:
+        result = _normalize_energy(0.04, 0.04)
+        assert result == pytest.approx(0.5)
+
+    def test_double_baseline_yields_one(self) -> None:
+        result = _normalize_energy(0.08, 0.04)
+        assert result == pytest.approx(1.0)
+
+    def test_capped_at_one(self) -> None:
+        result = _normalize_energy(0.20, 0.04)
+        assert result == 1.0
+
+    def test_zero_baseline_returns_zero(self) -> None:
+        assert _normalize_energy(0.05, 0.0) == 0.0
+
+
+# ── TestBaselineEnergy ────────────────────────────────────────────────────────
+
+
+class TestBaselineEnergy:
+    def test_returns_mean_of_utterance_energies(self, tmp_path: Path) -> None:
         audio = tmp_path / "audio.wav"
         audio.write_bytes(b"\x00" * 512)
-        with (
-            patch("pipeline.excitement.librosa.load", return_value=(np.zeros(1600), 16000)),
-            patch(
-                "pipeline.excitement.librosa.feature.rms",
-                return_value=np.array([[5.0]]),
-            ),
+        utts = [
+            {"start": 0, "end": 1000},
+            {"start": 1000, "end": 2000},
+        ]
+        energies = iter([0.02, 0.06])
+        with patch(
+            "pipeline.excitement._compute_energy",
+            side_effect=lambda *_a, **_k: next(energies),
         ):
-            result = _compute_energy(audio, 0.0, 1.0)
-        assert result == 1.0
+            result = _compute_baseline_energy(audio, utts)
+        assert result == pytest.approx(0.04)
+
+    def test_empty_utterances_returns_fallback(self, tmp_path: Path) -> None:
+        audio = tmp_path / "audio.wav"
+        audio.write_bytes(b"\x00" * 512)
+        assert _compute_baseline_energy(audio, []) == pytest.approx(0.01)
+
+
+# ── TestFormatMatchTime ──────────────────────────────────────────────────────
+
+
+class TestFormatMatchTime:
+    def test_formats_correctly(self) -> None:
+        utt = {"start": 2109050, "end": 2128770}
+        assert _format_match_time(utt) == "35:09"
+
+    def test_zero(self) -> None:
+        assert _format_match_time({"start": 0, "end": 1000}) == "0:00"
 
 
 # ── TestClassifyBatchWithLlm ──────────────────────────────────────────────────
@@ -226,7 +273,6 @@ class TestClassifyBatchWithLlm:
         batch = _make_batch(2)
         first_resp = _make_llm_response(
             [{"index": 0, "event_type": "goal", "description": "A goal!", "excitement_score": 9.0}]
-            # index 1 missing on first call
         )
         second_resp = _make_llm_response(
             [
@@ -255,7 +301,6 @@ class TestClassifyBatchWithLlm:
 
     def test_missing_index_after_retry_uses_default(self) -> None:
         batch = _make_batch(2)
-        # index 1 missing on both calls
         partial_resp = _make_llm_response(
             [{"index": 0, "event_type": "goal", "description": "A goal!", "excitement_score": 9.0}]
         )
@@ -317,6 +362,7 @@ class TestClassifyBatchWithLlm:
         batch = _make_batch(1)
         with (
             patch("pipeline.excitement.AZURE_OPENAI_API_KEY", ""),
+            patch("pipeline.excitement.OPENAI_API_KEY", ""),
             pytest.raises(ExcitementError, match="AZURE_OPENAI_API_KEY"),
         ):
             _classify_batch_with_llm(batch)
@@ -408,12 +454,29 @@ class TestAnalyzeExcitement:
         for entry in result:
             assert required_keys.issubset(entry.keys())
 
+    def test_timestamps_are_hh_mm_ss(self, tmp_path: Path) -> None:
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        _write_fake_audio(workspace)
+        transcript: dict[str, Any] = {
+            "commentator_speakers": ["A"],
+            "utterances": [
+                {"speaker": "A", "text": "Goal!", "start": 3661000, "end": 3665000},
+            ],
+        }
+        load_p, rms_p = _patch_librosa()
+        with load_p, rms_p, patch("pipeline.excitement.openai.AzureOpenAI") as mock_cls:
+            mock_cls.return_value.chat.completions.create.return_value = _good_llm_response_for(1)
+            with _patch_azure_settings():
+                result = analyze_excitement(transcript, _fake_metadata(workspace))
+        assert result[0]["timestamp_start"] == "01:01:01"
+        assert result[0]["timestamp_end"] == "01:01:05"
+
     def test_only_commentator_utterances_processed(self, tmp_path: Path) -> None:
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         _write_fake_audio(workspace)
         transcript = _fake_transcription()
-        # A and B are commentators; C is not — only 2 entries expected
         load_p, rms_p = _patch_librosa()
         with load_p, rms_p, patch("pipeline.excitement.openai.AzureOpenAI") as mock_cls:
             mock_cls.return_value.chat.completions.create.return_value = _good_llm_response_for(2)
@@ -426,7 +489,6 @@ class TestAnalyzeExcitement:
     def test_missing_audio_raises(self, tmp_path: Path) -> None:
         workspace = tmp_path / "workspace"
         workspace.mkdir()
-        # no audio.wav written
         with pytest.raises(ExcitementError, match="audio.wav not found"):
             analyze_excitement(_fake_transcription(), _fake_metadata(workspace))
 
@@ -448,7 +510,6 @@ class TestAnalyzeExcitement:
             "commentator_speakers": ["A"],
             "utterances": [{"speaker": "A", "text": "What a goal!", "start": 0, "end": 3000}],
         }
-        # High LLM score + keyword match → include_in_highlights should be True
         mock_resp = _make_llm_response(
             [{"index": 0, "event_type": "goal", "description": "A goal", "excitement_score": 9.0}]
         )
@@ -463,7 +524,6 @@ class TestAnalyzeExcitement:
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         _write_fake_audio(workspace)
-        # 21 utterances → 2 batches (20 + 1)
         utterances = [
             {
                 "speaker": "A",
@@ -510,7 +570,6 @@ class TestLlmSchema:
         assert "event_type" in required
         assert "description" in required
         assert "excitement_score" in required
-        # All EventType values must be in the enum
         event_type_values = items["properties"]["event_type"]["enum"]
         for et in EventType:
             assert et.value in event_type_values

@@ -5,8 +5,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from config.settings import DEFAULT_HIGHLIGHTS_DURATION_SECONDS, PIPELINE_WORKSPACE
-from models.events import EDREntry, EventType
+from config.settings import (
+    DEFAULT_HIGHLIGHTS_DURATION_SECONDS,
+    MAX_CLIP_DURATION_SECONDS,
+    MERGE_GAP_SECONDS,
+    PIPELINE_WORKSPACE,
+)
+from models.events import EDREntry, EventType, seconds_to_timestamp
 from utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -19,7 +24,12 @@ class EDRError(Exception):
     """Raised when EDR stage fails."""
 
 
-def merge_windows(windows: list[dict[str, Any]], *, gap_seconds: float = 2.0) -> list[EDREntry]:
+def merge_windows(
+    windows: list[dict[str, Any]],
+    *,
+    gap_seconds: float = MERGE_GAP_SECONDS,
+    max_clip_seconds: float = MAX_CLIP_DURATION_SECONDS,
+) -> list[EDREntry]:
     """Merge nearby excitement windows into EDREntry clips.
 
     Input dicts require: start_ms, end_ms, score (0–1), event_type (str),
@@ -27,6 +37,10 @@ def merge_windows(windows: list[dict[str, Any]], *, gap_seconds: float = 2.0) ->
     Windows within gap_seconds of each other (or overlapping) are merged.
     Merged score/energy_peak = max; keyword_hits = union; event_type from
     highest-scoring window.
+
+    If a merged clip exceeds *max_clip_seconds* it is split: only the region
+    around the peak-scoring window is kept (±max_clip_seconds/2), preventing
+    runaway clip lengths.
     """
     if not windows:
         return []
@@ -34,17 +48,17 @@ def merge_windows(windows: list[dict[str, Any]], *, gap_seconds: float = 2.0) ->
     sorted_wins = sorted(windows, key=lambda w: w["start_ms"])
     gap_ms = gap_seconds * 1000.0
 
-    # Start with a mutable copy of the first window
     current: dict[str, Any] = dict(sorted_wins[0])
     current["keyword_hits"] = list(current.get("keyword_hits", []))
+    current["_peak_ms"] = (current["start_ms"] + current["end_ms"]) / 2.0
 
     merged: list[dict[str, Any]] = []
 
     for w in sorted_wins[1:]:
         if w["start_ms"] - current["end_ms"] <= gap_ms:
-            # Absorb w into current
             if w["score"] > current["score"]:
                 current["event_type"] = w["event_type"]
+                current["_peak_ms"] = (w["start_ms"] + w["end_ms"]) / 2.0
             current["end_ms"] = max(current["end_ms"], w["end_ms"])
             current["score"] = max(current["score"], w["score"])
             current["energy_peak"] = max(current["energy_peak"], w["energy_peak"])
@@ -54,11 +68,20 @@ def merge_windows(windows: list[dict[str, Any]], *, gap_seconds: float = 2.0) ->
             merged.append(current)
             current = dict(w)
             current["keyword_hits"] = list(current.get("keyword_hits", []))
+            current["_peak_ms"] = (current["start_ms"] + current["end_ms"]) / 2.0
 
     merged.append(current)
 
+    max_ms = max_clip_seconds * 1000.0
     result: list[EDREntry] = []
     for m in merged:
+        clip_len = m["end_ms"] - m["start_ms"]
+        if clip_len > max_ms:
+            peak = m.get("_peak_ms", (m["start_ms"] + m["end_ms"]) / 2.0)
+            half = max_ms / 2.0
+            m["start_ms"] = max(m["start_ms"], peak - half)
+            m["end_ms"] = min(m["end_ms"], peak + half)
+
         try:
             event_type = EventType(m["event_type"])
         except ValueError:
@@ -126,10 +149,18 @@ def build_edr(excitement: dict[str, Any]) -> dict[str, Any]:
 
     entries_raw: list[dict[str, Any]] = json.loads(excitement_path.read_text())
 
+    # timestamps may be HH:MM:SS strings or raw floats
+    def _to_seconds(val: str | float) -> float:
+        if isinstance(val, str):
+            from models.events import timestamp_to_seconds
+
+            return timestamp_to_seconds(val)
+        return float(val)
+
     windows: list[dict[str, Any]] = [
         {
-            "start_ms": e["timestamp_start"] * 1000.0,
-            "end_ms": e["timestamp_end"] * 1000.0,
+            "start_ms": _to_seconds(e["timestamp_start"]) * 1000.0,
+            "end_ms": _to_seconds(e["timestamp_end"]) * 1000.0,
             "score": e["final_score"] / 10.0,
             "event_type": e["event_type"],
             "keyword_hits": e.get("keyword_matches", []),
@@ -151,6 +182,7 @@ def build_edr(excitement: dict[str, Any]) -> dict[str, Any]:
         "workspace": str(workspace),
         "clip_count": len(selected),
         "total_duration_seconds": total_duration,
+        "total_duration_display": seconds_to_timestamp(total_duration),
         "clips": clips,
     }
 

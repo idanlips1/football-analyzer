@@ -26,6 +26,8 @@ from config.settings import (
     EXCITEMENT_KEYWORD_WEIGHT,
     EXCITEMENT_LLM_WEIGHT,
     EXCITEMENT_THRESHOLD,
+    OPENAI_API_KEY,
+    OPENAI_MODEL,
 )
 from models.events import EventType, ExcitementEntry
 from utils.logger import get_logger
@@ -41,12 +43,27 @@ class ExcitementError(Exception):
 
 
 _LLM_SYSTEM_PROMPT = """\
-You are a football match analyst. Classify commentator utterances for a highlights reel.
-You will receive a JSON array of utterances. Return a classification for EVERY index provided.
-excitement_score: 0=mundane, 5=notable, 8=very exciting, 10=legendary moment."""
+You are an expert football match analyst building a highlights reel from live commentary.
+
+Your job is to decide whether each commentator utterance describes a LIVE, REAL-TIME \
+match event worth including in highlights.
+
+Rules:
+1. Only classify events happening RIGHT NOW in the match. If the commentator is \
+recalling past matches, telling anecdotes, discussing player history, or speculating \
+about the future, set excitement_score to 0 and event_type to "other".
+2. Look for present-tense action language: "shoots!", "saves!", "goal!", "he's through!" \
+vs past-tense storytelling: "he scored a hat trick last season", "back in 2019…".
+3. A timestamp is provided for each utterance — use it to judge whether the commentator \
+is describing live action at that point in the match.
+4. excitement_score: 0=mundane/anecdote, 5=notable live event, 8=very exciting, \
+10=legendary moment.
+5. Be strict: only score >=6 for clear, in-the-moment action."""
 
 _LLM_USER_TEMPLATE = """\
-Classify each of these {n} commentator utterances:
+Classify each of these {n} commentator utterances from a live football match.
+Remember: only LIVE events score above 0. Anecdotes, history, and speculation score 0.
+
 {utterances_json}"""
 
 
@@ -74,20 +91,25 @@ def analyze_excitement(
     utterances = _get_commentator_utterances(transcription)
     log.info("Processing %d commentator utterances", len(utterances))
 
+    # Compute baseline energy across the whole match for normalization
+    baseline_energy = _compute_baseline_energy(audio_path, utterances)
+    log.info("Baseline RMS energy: %.6f", baseline_energy)
+
     local: list[dict[str, Any]] = []
     for utt in utterances:
         start_s = utt["start"] / 1000.0
         end_s = utt["end"] / 1000.0
+        raw_energy = _compute_energy(audio_path, start_s, end_s - start_s)
+        normalized = _normalize_energy(raw_energy, baseline_energy)
         local.append(
             {
                 "utterance": utt,
-                "energy": _compute_energy(audio_path, start_s, end_s - start_s),
+                "energy": normalized,
                 "keywords": _match_keywords(utt["text"]),
             }
         )
 
     # Phase 2: batch LLM classification
-    # TODO: move to ThreadPoolExecutor once sequential works
     entries: list[dict[str, Any]] = []
     for batch in _chunks(local, EXCITEMENT_BATCH_SIZE):
         result_map = _classify_batch_with_llm(batch)
@@ -110,13 +132,46 @@ def _get_commentator_utterances(transcription: dict[str, Any]) -> list[dict[str,
 
 
 def _compute_energy(audio_path: Path, start_s: float, duration_s: float) -> float:
-    """librosa RMS energy, normalized 0.0–1.0. Returns 0.0 for zero-duration."""
+    """librosa RMS energy, raw mean. Returns 0.0 for zero-duration."""
     if duration_s <= 0:
         return 0.0
     y, _sr = librosa.load(str(audio_path), offset=start_s, duration=duration_s, sr=None)
     rms = librosa.feature.rms(y=y)
-    energy = float(np.mean(rms))
-    return min(energy, 1.0)
+    return float(np.mean(rms))
+
+
+def _compute_baseline_energy(
+    audio_path: Path,
+    utterances: list[dict[str, Any]],
+) -> float:
+    """Mean RMS across all commentator utterances — used as normalization baseline.
+
+    Returns a small fallback if there are no utterances or energy is near zero.
+    """
+    if not utterances:
+        return 0.01
+    energies: list[float] = []
+    for utt in utterances:
+        start_s = utt["start"] / 1000.0
+        dur = (utt["end"] - utt["start"]) / 1000.0
+        e = _compute_energy(audio_path, start_s, dur)
+        if e > 0:
+            energies.append(e)
+    if not energies:
+        return 0.01
+    return float(np.mean(energies))
+
+
+def _normalize_energy(raw_energy: float, baseline: float) -> float:
+    """Ratio of raw energy to baseline, capped at 1.0.
+
+    A value of ~0.5 means average, >0.7 is notably above baseline.
+    """
+    if baseline <= 0:
+        return 0.0
+    ratio = raw_energy / baseline
+    # Scale so that 2x baseline ≈ 1.0
+    return min(ratio / 2.0, 1.0)
 
 
 def _match_keywords(text: str) -> list[str]:
@@ -138,29 +193,39 @@ def _classify_batch_with_llm(
 
     Retries once if indices are missing. Falls back to defaults with log.warning.
     """
-    if not AZURE_OPENAI_API_KEY or not AZURE_OPENAI_ENDPOINT or not AZURE_OPENAI_DEPLOYMENT:
+    use_azure = bool(AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_DEPLOYMENT)
+    use_openai = bool(OPENAI_API_KEY and OPENAI_MODEL)
+    if not use_azure and not use_openai:
         raise ExcitementError(
-            "AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, and AZURE_OPENAI_DEPLOYMENT must be set in your .env file"
+            "Set either Azure OpenAI (AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, "
+            "AZURE_OPENAI_DEPLOYMENT) or OpenAI (OPENAI_API_KEY, OPENAI_MODEL) in your .env file"
         )
 
     utterances_payload = [
         {
             "index": i,
+            "timestamp": _format_match_time(item["utterance"]),
             "text": item["utterance"]["text"],
             "keywords": item["keywords"],
         }
         for i, item in enumerate(batch)
     ]
     expected_indices = set(range(len(batch)))
-    client = openai.AzureOpenAI(
-        api_key=AZURE_OPENAI_API_KEY,
-        azure_endpoint=AZURE_OPENAI_ENDPOINT,
-        api_version=AZURE_OPENAI_API_VERSION,
-    )
+    client: Any
+    if use_azure:
+        client = openai.AzureOpenAI(
+            api_key=AZURE_OPENAI_API_KEY,
+            azure_endpoint=AZURE_OPENAI_ENDPOINT,
+            api_version=AZURE_OPENAI_API_VERSION,
+        )
+        model_name = AZURE_OPENAI_DEPLOYMENT
+    else:
+        client = openai.OpenAI(api_key=OPENAI_API_KEY)
+        model_name = OPENAI_MODEL
 
     def _call() -> dict[int, dict[str, Any]]:
         response = client.chat.completions.create(  # type: ignore[call-overload]
-            model=AZURE_OPENAI_DEPLOYMENT,
+            model=model_name,
             messages=[
                 {"role": "system", "content": _LLM_SYSTEM_PROMPT},
                 {
@@ -218,6 +283,14 @@ def _classify_batch_with_llm(
     return result_map
 
 
+def _format_match_time(utterance: dict[str, Any]) -> str:
+    """Human-readable match time for the LLM prompt, e.g. ``35:09``."""
+    start_s = utterance["start"] / 1000.0
+    minutes = int(start_s) // 60
+    secs = int(start_s) % 60
+    return f"{minutes}:{secs:02d}"
+
+
 def _default_classification() -> dict[str, Any]:
     """Default classification for utterances the LLM failed to classify."""
     return {
@@ -229,7 +302,10 @@ def _default_classification() -> dict[str, Any]:
 
 
 def _compute_final_score(energy: float, keyword_score: float, llm_score: float) -> float:
-    """Apply weighted combination from settings."""
+    """Apply weighted combination from settings.
+
+    All three inputs are scaled to 0–10 before weighting.
+    """
     energy_score = energy * 10.0
     kw_score = keyword_score * 10.0
     return (

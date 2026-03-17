@@ -38,7 +38,8 @@ def _make_edr_data(workspace: Path, clips: list[dict[str, Any]]) -> dict[str, An
     vid_id = "test_video"
     vid_workspace = workspace / vid_id
     vid_workspace.mkdir(parents=True, exist_ok=True)
-    total_duration = sum(c["end_seconds"] - c["start_seconds"] for c in clips)
+    entries = [EDREntry.from_dict(c) for c in clips]
+    total_duration = sum(e.duration for e in entries)
     edr_result: dict[str, Any] = {
         "video_id": vid_id,
         "workspace": str(vid_workspace),
@@ -190,3 +191,4 @@ class TestFilterEdr:
         result = filter_edr(data, [EventType.GOAL])
         assert result["total_duration_seconds"] == pytest.approx(20.0)
         assert result["clip_count"] == 2
+        assert "total_duration_display" in result

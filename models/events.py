@@ -8,6 +8,21 @@ from enum import StrEnum
 from typing import Any
 
 
+def seconds_to_timestamp(seconds: float) -> str:
+    """Convert fractional seconds to ``HH:MM:SS`` string."""
+    total = int(seconds)
+    h = total // 3600
+    m = (total % 3600) // 60
+    s = total % 60
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+def timestamp_to_seconds(ts: str) -> float:
+    """Convert ``HH:MM:SS`` string back to fractional seconds."""
+    parts = ts.split(":")
+    return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+
+
 class EventType(StrEnum):
     GOAL = "goal"
     SHOT_ON_TARGET = "shot_on_target"
@@ -33,7 +48,7 @@ class ExcitementEntry:
 
     timestamp_start: float  # seconds (utterance start ms / 1000)
     timestamp_end: float  # seconds (utterance end ms / 1000)
-    commentator_energy: float  # RMS energy, normalized 0.0–1.0
+    commentator_energy: float  # normalized energy (0 = baseline, >0 = above average)
     commentator_text: str  # raw utterance text
     keyword_matches: list[str]  # matched keyword strings
     event_type: EventType
@@ -44,13 +59,19 @@ class ExcitementEntry:
 
     def to_dict(self) -> dict[str, Any]:
         d = dataclasses.asdict(self)
-        d["event_type"] = self.event_type.value  # enum → str for JSON
+        d["event_type"] = self.event_type.value
+        d["timestamp_start"] = seconds_to_timestamp(self.timestamp_start)
+        d["timestamp_end"] = seconds_to_timestamp(self.timestamp_end)
         return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ExcitementEntry:
         data = dict(data)
         data["event_type"] = EventType(data["event_type"])
+        if isinstance(data["timestamp_start"], str):
+            data["timestamp_start"] = timestamp_to_seconds(data["timestamp_start"])
+        if isinstance(data["timestamp_end"], str):
+            data["timestamp_end"] = timestamp_to_seconds(data["timestamp_end"])
         return cls(**data)
 
 
@@ -72,13 +93,19 @@ class EDREntry:
 
     def to_dict(self) -> dict[str, Any]:
         d = dataclasses.asdict(self)
-        d["event_type"] = self.event_type.value  # enum → str for JSON
+        d["event_type"] = self.event_type.value
+        d["start_seconds"] = seconds_to_timestamp(self.start_seconds)
+        d["end_seconds"] = seconds_to_timestamp(self.end_seconds)
         return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> EDREntry:
         data = dict(data)
         data["event_type"] = EventType(data["event_type"])
+        if isinstance(data["start_seconds"], str):
+            data["start_seconds"] = timestamp_to_seconds(data["start_seconds"])
+        if isinstance(data["end_seconds"], str):
+            data["end_seconds"] = timestamp_to_seconds(data["end_seconds"])
         return cls(**data)
 
 
