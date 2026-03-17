@@ -49,7 +49,7 @@ def merge_windows(windows: list[dict[str, Any]], *, gap_seconds: float = 2.0) ->
             current["score"] = max(current["score"], w["score"])
             current["energy_peak"] = max(current["energy_peak"], w["energy_peak"])
             hits = set(current["keyword_hits"]) | set(w.get("keyword_hits", []))
-            current["keyword_hits"] = list(hits)
+            current["keyword_hits"] = sorted(hits)
         else:
             merged.append(current)
             current = dict(w)
