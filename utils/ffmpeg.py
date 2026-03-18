@@ -94,3 +94,88 @@ def extract_audio(video_path: Path, output_path: Path) -> Path:
     size_mb = output_path.stat().st_size / (1024 * 1024)
     log.info("Audio extracted: %.1f MB", size_mb)
     return output_path
+
+
+def cut_clip(
+    video_path: Path,
+    start_seconds: float,
+    end_seconds: float,
+    output_path: Path,
+) -> Path:
+    """Cut a clip from *video_path* between start and end using stream copy.
+
+    Stream copy avoids re-encoding so cuts are near-instant.
+    Returns *output_path* on success.
+    Raises FFmpegError if the cut fails.
+    """
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-ss",
+        f"{start_seconds:.3f}",
+        "-to",
+        f"{end_seconds:.3f}",
+        "-i",
+        str(video_path),
+        "-c",
+        "copy",
+        "-avoid_negative_ts",
+        "make_zero",
+        str(output_path),
+    ]
+    log.info("Cutting clip %.1f–%.1fs → %s", start_seconds, end_seconds, output_path.name)
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, check=True)  # nosec B603
+    except FileNotFoundError as exc:
+        raise FFmpegError(
+            "ffmpeg not found — install FFmpeg (https://ffmpeg.org/download.html)"
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        raise FFmpegError(f"ffmpeg clip cutting failed: {exc.stderr.strip()}") from exc
+    if not output_path.exists():
+        raise FFmpegError(f"Clip cutting produced no output at {output_path}")
+    return output_path
+
+
+def concat_clips(clip_paths: list[Path], output_path: Path) -> Path:
+    """Concatenate *clip_paths* in order using the ffmpeg concat demuxer.
+
+    Writes a temporary file list next to *output_path*, runs ffmpeg, then
+    cleans up the list file.
+    Returns *output_path* on success.
+    Raises FFmpegError if concatenation fails or clip_paths is empty.
+    """
+    if not clip_paths:
+        raise FFmpegError("concat_clips called with an empty clip list")
+
+    list_path = output_path.parent / "_concat_list.txt"
+    list_path.write_text("\n".join(f"file '{p.resolve()}'" for p in clip_paths))
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(list_path),
+        "-c",
+        "copy",
+        str(output_path),
+    ]
+    log.info("Concatenating %d clips → %s", len(clip_paths), output_path.name)
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, check=True)  # nosec B603
+    except FileNotFoundError as exc:
+        raise FFmpegError(
+            "ffmpeg not found — install FFmpeg (https://ffmpeg.org/download.html)"
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        raise FFmpegError(f"ffmpeg concat failed: {exc.stderr.strip()}") from exc
+    finally:
+        if list_path.exists():
+            list_path.unlink()
+
+    if not output_path.exists():
+        raise FFmpegError(f"Concatenation produced no output at {output_path}")
+    return output_path

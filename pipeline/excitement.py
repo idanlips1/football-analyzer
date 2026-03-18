@@ -22,8 +22,11 @@ from config.settings import (
     AZURE_OPENAI_DEPLOYMENT,
     AZURE_OPENAI_ENDPOINT,
     EXCITEMENT_BATCH_SIZE,
+    EXCITEMENT_DURATION_PENALTY_ONSET,
+    EXCITEMENT_DURATION_PENALTY_RATE,
     EXCITEMENT_ENERGY_WEIGHT,
     EXCITEMENT_KEYWORD_WEIGHT,
+    EXCITEMENT_LLM_FLOOR,
     EXCITEMENT_LLM_WEIGHT,
     EXCITEMENT_THRESHOLD,
     OPENAI_API_KEY,
@@ -48,6 +51,18 @@ You are an expert football match analyst building a highlights reel from live co
 Your job is to decide whether each commentator utterance describes a LIVE, REAL-TIME \
 match event worth including in highlights.
 
+Excitement scale (0–10):
+0   = anecdote, history, stats recap, player biography, speculation, pre/post-match talk
+1–2 = generic tactical observation ("they need to push forward")
+3   = setup only — corner being positioned, free kick awarded but not yet played
+4   = live play, no real threat (cross comfortably cleared, routine defensive action)
+5   = attacking moment with some threat (shot on target, dangerous cross)
+6   = good opportunity or notable incident (strong chance, VAR check beginning)
+7   = high-quality chance or important incident (great through-ball, near-miss)
+8   = near-goal moment (great save, cleared off line, disallowed goal drama)
+9   = confirmed goal, red card, or penalty awarded
+10  = legendary moment (last-minute winner, hat-trick goal)
+
 Rules:
 1. Only classify events happening RIGHT NOW in the match. If the commentator is \
 recalling past matches, telling anecdotes, discussing player history, or speculating \
@@ -56,13 +71,31 @@ about the future, set excitement_score to 0 and event_type to "other".
 vs past-tense storytelling: "he scored a hat trick last season", "back in 2019…".
 3. A timestamp is provided for each utterance — use it to judge whether the commentator \
 is describing live action at that point in the match.
-4. excitement_score: 0=mundane/anecdote, 5=notable live event, 8=very exciting, \
-10=legendary moment.
-5. Be strict: only score >=6 for clear, in-the-moment action."""
+4. Be strict: only score ≥6 for clear, in-the-moment action with real excitement or consequence.
+5. A score of 3 means a setup event only — corner being positioned, free kick just \
+awarded but not yet taken. Score 0 for retrospective or biographical references.
+6. The keywords shown with each utterance are pre-matched football terms. \
+DO NOT treat them as evidence of excitement — they also fire on retrospective \
+commentary and generic mentions. Judge excitement only from the text itself.
+7. Each utterance includes its duration_seconds. For long segments (>30s): score the \
+AVERAGE excitement across the whole segment, not just the best moment in it. A 77s \
+block that mixes player biography with live play averages to ≤2. Only short, focused \
+utterances (<20s) of pure live action should reach scores ≥7.
+
+Examples:
+- "He scored in his last three games for Chelsea before the move to Bournemouth" → 0 (biography)
+- "Well, he hadn't had so much publicity because he's technically not a new signing" \
+  → 0 (retrospective)
+- "His next job is to take the corner. Tall man in the middle waiting" → 3 (setup only)
+- "He drives forward, shoots — blocked by the defender!" → 5 (live attacking, no goal)
+- "Incredible save! He's pushed it around the post with one hand!" → 8 (near-goal moment)
+- "GOAL! He's scored! The stadium erupts — and VAR is checking now!" → 9 (confirmed goal)"""
 
 _LLM_USER_TEMPLATE = """\
 Classify each of these {n} commentator utterances from a live football match.
 Remember: only LIVE events score above 0. Anecdotes, history, and speculation score 0.
+For segments with duration_seconds > 30: score the AVERAGE excitement of the full \
+segment, not just its most exciting moment.
 
 {utterances_json}"""
 
@@ -79,8 +112,11 @@ def analyze_excitement(
     output_path = workspace / EXCITEMENT_FILENAME
 
     if output_path.exists():
-        log.info("Stage 3 cache hit — loading existing excitement analysis")
-        return json.loads(output_path.read_text())  # type: ignore[no-any-return]
+        log.info("Stage 3 cache hit — reapplying current formula to cached scores")
+        cached = json.loads(output_path.read_text())
+        updated = _reapply_formula(cached)
+        output_path.write_text(json.dumps(updated, indent=2))
+        return updated
 
     log.info("Stage 3 — excitement analysis starting")
     audio_path = workspace / AUDIO_FILENAME
@@ -205,6 +241,9 @@ def _classify_batch_with_llm(
         {
             "index": i,
             "timestamp": _format_match_time(item["utterance"]),
+            "duration_seconds": round(
+                (item["utterance"]["end"] - item["utterance"]["start"]) / 1000
+            ),
             "text": item["utterance"]["text"],
             "keywords": item["keywords"],
         }
@@ -301,18 +340,28 @@ def _default_classification() -> dict[str, Any]:
     }
 
 
-def _compute_final_score(energy: float, keyword_score: float, llm_score: float) -> float:
-    """Apply weighted combination from settings.
+def _compute_final_score(
+    energy: float, keyword_score: float, llm_score: float, duration_s: float = 0.0
+) -> float:
+    """Apply weighted combination from settings, with a duration penalty for long segments.
 
     All three inputs are scaled to 0–10 before weighting.
+    Long utterances (>EXCITEMENT_DURATION_PENALTY_ONSET) lose points at
+    EXCITEMENT_DURATION_PENALTY_RATE per additional 30s — penalising mixed-content
+    segments where transcription grouped multiple minutes of speech into one block.
     """
     energy_score = energy * 10.0
     kw_score = keyword_score * 10.0
-    return (
+    base = (
         EXCITEMENT_ENERGY_WEIGHT * energy_score
         + EXCITEMENT_KEYWORD_WEIGHT * kw_score
         + EXCITEMENT_LLM_WEIGHT * llm_score
     )
+    penalty = (
+        max(0.0, (duration_s - EXCITEMENT_DURATION_PENALTY_ONSET) / 30.0)
+        * EXCITEMENT_DURATION_PENALTY_RATE
+    )
+    return max(0.0, base - penalty)
 
 
 def _build_edr_entry(
@@ -325,7 +374,8 @@ def _build_edr_entry(
     keywords = item["keywords"]
     kw_score = _keyword_score(keywords)
     llm_score = float(classification["excitement_score"])
-    final = _compute_final_score(energy, kw_score, llm_score)
+    duration_s = (utt["end"] - utt["start"]) / 1000.0
+    final = _compute_final_score(energy, kw_score, llm_score, duration_s)
     return ExcitementEntry(
         timestamp_start=utt["start"] / 1000.0,
         timestamp_end=utt["end"] / 1000.0,
@@ -336,8 +386,39 @@ def _build_edr_entry(
         llm_description=classification["description"],
         llm_excitement_score=llm_score,
         final_score=final,
-        include_in_highlights=final >= EXCITEMENT_THRESHOLD,
+        include_in_highlights=llm_score >= EXCITEMENT_LLM_FLOOR and final >= EXCITEMENT_THRESHOLD,
     )
+
+
+def _reapply_formula(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Recompute final_score and include_in_highlights from stored component scores.
+
+    Allows formula tuning (weights, threshold, floor, duration penalty) to take effect
+    on cached LLM data without re-running the LLM.
+    Handles both HH:MM:SS string timestamps (current format) and legacy floats.
+    """
+    from models.events import timestamp_to_seconds
+
+    updated = []
+    for entry in entries:
+        energy = float(entry["commentator_energy"])
+        keywords: list[str] = entry["keyword_matches"]
+        llm_score = float(entry["llm_excitement_score"])
+        kw_score = _keyword_score(keywords)
+        ts_start = entry["timestamp_start"]
+        ts_end = entry["timestamp_end"]
+        if isinstance(ts_start, str):
+            duration_s = timestamp_to_seconds(ts_end) - timestamp_to_seconds(ts_start)
+        else:
+            duration_s = float(ts_end) - float(ts_start)
+        final = _compute_final_score(energy, kw_score, llm_score, duration_s)
+        new_entry = dict(entry)
+        new_entry["final_score"] = final
+        new_entry["include_in_highlights"] = (
+            llm_score >= EXCITEMENT_LLM_FLOOR and final >= EXCITEMENT_THRESHOLD
+        )
+        updated.append(new_entry)
+    return updated
 
 
 def _chunks(lst: list[Any], n: int) -> Generator[list[Any], None, None]:

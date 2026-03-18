@@ -32,12 +32,21 @@ OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_MODEL: str = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
 
 # Scoring weights (must sum to 1.0 when scaled consistently)
-EXCITEMENT_ENERGY_WEIGHT: float = 0.20
-EXCITEMENT_KEYWORD_WEIGHT: float = 0.30
-EXCITEMENT_LLM_WEIGHT: float = 0.50
+EXCITEMENT_ENERGY_WEIGHT: float = 0.10
+EXCITEMENT_KEYWORD_WEIGHT: float = 0.20
+EXCITEMENT_LLM_WEIGHT: float = 0.70
 
 # Threshold for include_in_highlights (scale 0–10)
-EXCITEMENT_THRESHOLD: float = 5.0
+EXCITEMENT_THRESHOLD: float = 4.5
+
+# Hard floor: entries with LLM score below this are excluded regardless of keywords/energy
+EXCITEMENT_LLM_FLOOR: float = 4.0
+
+# Duration penalty: utterances longer than onset seconds lose points at this rate.
+# penalty = max(0, (duration_s - onset) / 30) * rate
+# e.g. 90s utterance → (90-30)/30 * 1.5 = 3.0 pts deducted
+EXCITEMENT_DURATION_PENALTY_ONSET: float = 30.0
+EXCITEMENT_DURATION_PENALTY_RATE: float = 1.5
 
 # LLM batching
 EXCITEMENT_BATCH_SIZE: int = 20

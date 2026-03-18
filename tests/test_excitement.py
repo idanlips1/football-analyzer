@@ -18,6 +18,7 @@ from config.llm_schema import BATCH_RESPONSE_SCHEMA
 from models.events import EventType
 from pipeline.excitement import (
     ExcitementError,
+    _build_edr_entry,
     _classify_batch_with_llm,
     _compute_baseline_energy,
     _compute_energy,
@@ -25,6 +26,7 @@ from pipeline.excitement import (
     _keyword_score,
     _match_keywords,
     _normalize_energy,
+    _reapply_formula,
     analyze_excitement,
 )
 
@@ -375,13 +377,27 @@ class TestAnalyzeExcitement:
     def test_cache_hit_skips_processing(self, tmp_path: Path) -> None:
         workspace = tmp_path / "workspace"
         workspace.mkdir()
-        cached = [{"event_type": "goal", "final_score": 9.0}]
+        cached = [
+            {
+                "event_type": "goal",
+                "commentator_energy": 0.8,
+                "keyword_matches": ["goal", "incredible"],
+                "llm_excitement_score": 9.0,
+                "final_score": 9.0,
+                "include_in_highlights": True,
+                "timestamp_start": "00:00:00",
+                "timestamp_end": "00:00:03",
+                "commentator_text": "What a goal! Incredible!",
+                "llm_description": "A confirmed goal",
+            }
+        ]
         (workspace / "excitement.json").write_text(json.dumps(cached))
         meta = _fake_metadata(workspace)
         with patch("pipeline.excitement.librosa.load") as mock_load:
             result = analyze_excitement(_fake_transcription(), meta)
-        assert result == cached
         mock_load.assert_not_called()
+        # LLM score (9.0) >= EXCITEMENT_LLM_FLOOR — entry must be included
+        assert result[0]["include_in_highlights"] is True
 
     def test_saves_excitement_json(self, tmp_path: Path) -> None:
         workspace = tmp_path / "workspace"
@@ -551,6 +567,152 @@ class TestAnalyzeExcitement:
                 result = analyze_excitement(transcript, _fake_metadata(workspace))
         assert len(result) == 21
         assert mock_create.call_count == 2
+
+
+# ── TestLlmFloorGate ──────────────────────────────────────────────────────────
+
+
+class TestLlmFloorGate:
+    def test_entry_below_floor_excluded_despite_high_keyword_score(self) -> None:
+        # LLM=2 (below floor=4.0): floor gate rejects regardless of keyword/energy boost
+        item = {
+            "utterance": _make_utterance(0, text="He scored a goal back in 2019"),
+            "energy": 0.5,
+            "keywords": ["goal"],
+        }
+        clf = {
+            "event_type": "goal",
+            "description": "Historical goal reference",
+            "excitement_score": 2.0,
+        }
+        entry = _build_edr_entry(item, clf)
+        assert entry.include_in_highlights is False
+
+    def test_entry_at_floor_eligible_when_score_passes(self) -> None:
+        # LLM=4.0 (exactly at floor), high energy + keyword → final score passes threshold
+        # energy=1.0→10, kw=["goal"](0.7)→7.0, llm=4.0: 0.1*10+0.2*7+0.7*4 = 1+1.4+2.8 = 5.2
+        item = {
+            "utterance": _make_utterance(0, text="What a goal!"),
+            "energy": 1.0,
+            "keywords": ["goal"],
+        }
+        clf = {"event_type": "goal", "description": "A live goal", "excitement_score": 4.0}
+        entry = _build_edr_entry(item, clf)
+        assert entry.include_in_highlights is True
+
+    def test_floor_zero_disables_gate(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # With floor=0.0, llm=3.5 is eligible if final score >= threshold
+        # energy=1.0, kw=["goal"](0.7): 0.1*10+0.2*7+0.7*3.5 = 1+1.4+2.45 = 4.85 >= 4.5
+        monkeypatch.setattr("pipeline.excitement.EXCITEMENT_LLM_FLOOR", 0.0)
+        item = {
+            "utterance": _make_utterance(0, text="He drives forward and shoots"),
+            "energy": 1.0,
+            "keywords": ["goal"],
+        }
+        clf = {"event_type": "other", "description": "Live attacking play", "excitement_score": 3.5}
+        entry = _build_edr_entry(item, clf)
+        assert entry.include_in_highlights is True
+
+
+# ── TestDurationPenalty ───────────────────────────────────────────────────────
+
+
+class TestDurationPenalty:
+    def test_short_utterance_no_penalty(self) -> None:
+        # 10s utterance: no penalty. energy=0.5→5, kw=0, llm=5 → 0.5+0+3.5 = 4.0
+        item = {
+            "utterance": {"start": 0, "end": 10000, "text": "He shoots!", "speaker": "A"},
+            "energy": 0.5,
+            "keywords": [],
+        }
+        clf = {"event_type": "shot_on_target", "description": "Live shot", "excitement_score": 5.0}
+        entry = _build_edr_entry(item, clf)
+        assert entry.final_score == pytest.approx(4.0)
+
+    def test_long_utterance_penalized(self) -> None:
+        # 90s: penalty = (90-30)/30 * 1.5 = 3.0. base = 0.5+0+3.5 = 4.0 → final = 1.0
+        item = {
+            "utterance": {"start": 0, "end": 90000, "text": "Long commentary", "speaker": "A"},
+            "energy": 0.5,
+            "keywords": [],
+        }
+        clf = {"event_type": "other", "description": "Extended talk", "excitement_score": 5.0}
+        entry = _build_edr_entry(item, clf)
+        assert entry.final_score == pytest.approx(1.0)
+
+    def test_very_long_utterance_excluded(self) -> None:
+        # 120s, llm=7 would pass floor+threshold without penalty
+        # base = 0.1*8+0.2*0+0.7*7 = 0.8+4.9 = 5.7, penalty = (120-30)/30*1.5 = 4.5 → 1.2
+        item = {
+            "utterance": {
+                "start": 0,
+                "end": 120000,
+                "text": "Very long commentary",
+                "speaker": "A",
+            },
+            "energy": 0.8,
+            "keywords": [],
+        }
+        clf = {"event_type": "goal", "description": "Mixed content", "excitement_score": 7.0}
+        entry = _build_edr_entry(item, clf)
+        assert entry.include_in_highlights is False
+
+
+# ── TestReapplyFormula ────────────────────────────────────────────────────────
+
+
+def _make_cached_entry(
+    *,
+    energy: float,
+    keywords: list[str],
+    llm_score: float,
+    final_score: float,
+    include: bool,
+) -> dict[str, Any]:
+    return {
+        "commentator_energy": energy,
+        "keyword_matches": keywords,
+        "llm_excitement_score": llm_score,
+        "final_score": final_score,
+        "include_in_highlights": include,
+        "event_type": "goal",
+        "timestamp_start": "00:00:00",
+        "timestamp_end": "00:00:03",
+        "commentator_text": "Some text",
+        "llm_description": "Some description",
+    }
+
+
+class TestReapplyFormula:
+    def test_false_positive_corrected(self) -> None:
+        # LLM=2 is below floor=4.0: was incorrectly included, must be excluded after reapply
+        entry = _make_cached_entry(
+            energy=0.5, keywords=["goal"], llm_score=2.0, final_score=5.27, include=True
+        )
+        result = _reapply_formula([entry])
+        assert result[0]["include_in_highlights"] is False
+
+    def test_true_positive_preserved(self) -> None:
+        # LLM=9.0 >> floor: genuine goal remains included after reapply
+        entry = _make_cached_entry(
+            energy=0.8,
+            keywords=["goal", "incredible"],
+            llm_score=9.0,
+            final_score=9.0,
+            include=True,
+        )
+        result = _reapply_formula([entry])
+        assert result[0]["include_in_highlights"] is True
+
+    def test_final_score_recalculated_with_new_weights(self) -> None:
+        # energy=0.5→5, kw=["goal"](0.7)→7, llm=2.0, duration=3s (no penalty)
+        # new: 0.10*5 + 0.20*7 + 0.70*2 = 0.5 + 1.4 + 1.4 = 3.3
+        entry = _make_cached_entry(
+            energy=0.5, keywords=["goal"], llm_score=2.0, final_score=5.0, include=True
+        )
+        result = _reapply_formula([entry])
+        assert result[0]["final_score"] == pytest.approx(3.3)
+        assert result[0]["final_score"] != pytest.approx(5.0)
 
 
 # ── TestLlmSchema ─────────────────────────────────────────────────────────────

@@ -12,7 +12,7 @@ class KeywordEntry(NamedTuple):
 
 
 HIGH: list[KeywordEntry] = [
-    KeywordEntry("goal", 1.0),
+    KeywordEntry("goal", 0.7),
     KeywordEntry("what a goal", 1.0),
     KeywordEntry("incredible", 0.95),
     KeywordEntry("unbelievable", 0.95),
