@@ -170,24 +170,34 @@ def _pick_fixture_from_team_search() -> int | None:
 
 def _resolve_fixture_auto(user_query: str, video_title: str) -> int | None:
     """Resolve fixture from title + query via API; fall back to manual prompts."""
-    print("\n  Resolving fixture via API-Football (from your search and video title)…")
-    fid, cands = resolve_fixture_for_video(user_query, video_title)
-    if fid is not None:
-        print(f"  Using fixture id={fid}.")
-        return fid
-    if len(cands) == 1:
-        only_id = int(cands[0]["fixture_id"])
-        print(f"  Using fixture id={only_id}.")
+    print("\n  Resolving fixture via API-Football…")
+    res = resolve_fixture_for_video(user_query, video_title)
+
+    if res.teams_parsed:
+        print(f"  Detected teams: {res.team_a} vs {res.team_b}")
+
+    if res.fixture_id is not None:
+        print(f"  Auto-matched fixture id={res.fixture_id}")
+        return res.fixture_id
+
+    if len(res.candidates) == 1:
+        only = res.candidates[0]
+        only_id = int(only["fixture_id"])
+        print(f"  Single match found: id={only_id}")
         return only_id
-    if len(cands) > 1:
-        print(f"\n  {len(cands)} possible matches — which one is this video?\n")
-        picked = _pick_fixture_from_list(cands)
+
+    if len(res.candidates) > 1:
+        print(f"\n  {len(res.candidates)} possible fixture(s) — which one?\n")
+        picked = _pick_fixture_from_list(res.candidates)
         if picked is not None:
             return picked
         print("  Trying manual linking instead.")
         return _link_fixture_interactive()
 
-    print("  Could not infer teams from the video title for API lookup.")
+    if res.teams_parsed:
+        print("  API returned no fixtures for these teams (check your API plan date limits).")
+    else:
+        print("  Could not parse team names from the video title.")
     return _link_fixture_interactive()
 
 

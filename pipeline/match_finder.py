@@ -166,9 +166,11 @@ def fetch_headtohead_fixtures(
     *,
     season: int | None = None,
     league: int | None = None,
-    last: int = 80,
 ) -> list[dict[str, Any]]:
-    """Head-to-head fixtures between two team names (resolved via search)."""
+    """Head-to-head fixtures between two team names (resolved via search).
+
+    Omits the ``last`` parameter because free plans reject it.
+    """
     if not API_FOOTBALL_KEY:
         log.warning("API_FOOTBALL_KEY not set — skipping head-to-head lookup")
         return []
@@ -179,12 +181,17 @@ def fetch_headtohead_fixtures(
         if team1_id is None or team2_id is None:
             return []
 
-        parts = [f"h2h={team1_id}-{team2_id}", f"last={last}"]
+        parts = [f"h2h={team1_id}-{team2_id}"]
         if season is not None:
             parts.append(f"season={season}")
         if league is not None:
             parts.append(f"league={league}")
         raw = _api_get(f"/fixtures/headtohead?{'&'.join(parts)}")
+
+        api_errors = raw.get("errors")
+        if api_errors:
+            log.warning("API-Football H2H errors: %s", api_errors)
+
         rows: list[dict[str, Any]] = []
         for item in raw.get("response", []):
             rows.append(_fixture_row_from_api_item(item))
@@ -196,19 +203,36 @@ def fetch_headtohead_fixtures(
         return []
 
 
+class FixtureResolution:
+    """Result of automatic fixture resolution."""
+
+    __slots__ = ("fixture_id", "candidates", "teams_parsed", "team_a", "team_b")
+
+    def __init__(
+        self,
+        *,
+        fixture_id: int | None = None,
+        candidates: list[dict[str, Any]] | None = None,
+        teams_parsed: bool = False,
+        team_a: str = "",
+        team_b: str = "",
+    ) -> None:
+        self.fixture_id = fixture_id
+        self.candidates = candidates or []
+        self.teams_parsed = teams_parsed
+        self.team_a = team_a
+        self.team_b = team_b
+
+
 def resolve_fixture_for_video(
     user_query: str,
     video_title: str,
-) -> tuple[int | None, list[dict[str, Any]]]:
-    """Pick a single fixture id from the video title and query, or return candidates.
-
-    Returns ``(fixture_id, [])`` when unique; ``(None, rows)`` when the user
-    should choose; ``(None, [])`` when parsing or API lookup failed.
-    """
+) -> FixtureResolution:
+    """Pick a single fixture id from the video title and query, or return candidates."""
     teams = parse_teams_from_video_title(video_title)
     if not teams:
         log.info("Could not parse two teams from title: %s", video_title[:80])
-        return None, []
+        return FixtureResolution()
 
     a, b = teams
     league_hint = infer_league_id_from_query(user_query + " " + video_title)
@@ -217,12 +241,14 @@ def resolve_fixture_for_video(
     for y in list(years):
         year_set.add(y - 1)
 
-    rows = fetch_headtohead_fixtures(a, b, league=league_hint, last=100)
+    rows = fetch_headtohead_fixtures(a, b, league=league_hint)
     if not rows and league_hint is not None:
-        rows = fetch_headtohead_fixtures(a, b, last=100)
+        rows = fetch_headtohead_fixtures(a, b)
+
+    base = FixtureResolution(teams_parsed=True, team_a=a, team_b=b)
 
     if not rows:
-        return None, []
+        return base
 
     def sort_key(r: dict[str, Any]) -> str:
         return str(r["date"])
@@ -232,16 +258,18 @@ def resolve_fixture_for_video(
     if year_set:
         filtered = [r for r in rows_sorted if _fixture_date_year(str(r["date"])) in year_set]
         if len(filtered) == 1:
-            return int(filtered[0]["fixture_id"]), []
+            base.fixture_id = int(filtered[0]["fixture_id"])
+            return base
         if len(filtered) > 1:
-            return None, sorted(filtered, key=sort_key, reverse=True)
-        # No row matched listed years — offer the most recent meetings instead
-        return None, rows_sorted[:12]
+            base.candidates = sorted(filtered, key=sort_key, reverse=True)
+            return base
 
     if len(rows_sorted) == 1:
-        return int(rows_sorted[0]["fixture_id"]), []
+        base.fixture_id = int(rows_sorted[0]["fixture_id"])
+        return base
 
-    return None, rows_sorted[:12]
+    base.candidates = rows_sorted[:12]
+    return base
 
 
 def search_fixtures(

@@ -448,12 +448,15 @@ class TestResolveFixtureForVideo:
                 "score": {"home": 0, "away": 1},
             }
         ]
-        fid, cands = resolve_fixture_for_video(
+        res = resolve_fixture_for_video(
             "Champions League final 2024",
             "Liverpool v Real Madrid (0-1) | Champions League Final",
         )
-        assert fid == 999
-        assert cands == []
+        assert res.fixture_id == 999
+        assert res.candidates == []
+        assert res.teams_parsed is True
+        assert res.team_a == "Liverpool"
+        assert res.team_b == "Real Madrid"
 
     @patch("pipeline.match_finder.fetch_headtohead_fixtures")
     def test_returns_candidates_when_ambiguous(self, mock_h2h: MagicMock) -> None:
@@ -477,9 +480,26 @@ class TestResolveFixtureForVideo:
                 "score": None,
             },
         ]
-        fid, cands = resolve_fixture_for_video(
+        res = resolve_fixture_for_video(
             "Champions League final 2024",
             "A v B | Champions League",
         )
-        assert fid is None
-        assert len(cands) == 2
+        assert res.fixture_id is None
+        assert len(res.candidates) == 2
+
+    def test_no_teams_parsed(self) -> None:
+        res = resolve_fixture_for_video("some query", "no parseable title here")
+        assert res.teams_parsed is False
+        assert res.fixture_id is None
+        assert res.candidates == []
+
+    @patch("pipeline.match_finder.fetch_headtohead_fixtures")
+    def test_api_empty_but_teams_parsed(self, mock_h2h: MagicMock) -> None:
+        mock_h2h.return_value = []
+        res = resolve_fixture_for_video(
+            "final 2024",
+            "TeamX v TeamY | Some Cup",
+        )
+        assert res.teams_parsed is True
+        assert res.fixture_id is None
+        assert res.candidates == []
