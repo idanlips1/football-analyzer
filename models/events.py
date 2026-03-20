@@ -38,6 +38,8 @@ class EventType(StrEnum):
     NEAR_MISS = "near_miss"
     RED_CARD = "red_card"
     YELLOW_CARD = "yellow_card"
+    OWN_GOAL = "own_goal"
+    SUBSTITUTION = "substitution"
     UNKNOWN = "unknown"
     OTHER = "other"
 
@@ -107,6 +109,67 @@ class EDREntry:
         if isinstance(data["end_seconds"], str):
             data["end_seconds"] = timestamp_to_seconds(data["end_seconds"])
         return cls(**data)
+
+
+@dataclass
+class MatchEvent:
+    """Single match event from the API-Football data source."""
+
+    minute: int
+    extra_minute: int | None  # stoppage time (e.g. 3 for 90+3')
+    half: str  # "1st Half" / "2nd Half" / "Extra Time"
+    event_type: EventType
+    team: str
+    player: str
+    assist: str | None
+    score: str  # running score at time of event, e.g. "2 - 1"
+    detail: str  # "Normal Goal", "Penalty", "Own Goal", "yellow card", etc.
+
+    def to_dict(self) -> dict[str, Any]:
+        d = dataclasses.asdict(self)
+        d["event_type"] = self.event_type.value
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MatchEvent:
+        data = dict(data)
+        data["event_type"] = EventType(data["event_type"])
+        return cls(**data)
+
+
+@dataclass
+class AlignedEvent:
+    """Match event aligned to a video timestamp (output of Stage 4)."""
+
+    event_type: EventType
+    minute: int
+    extra_minute: int | None
+    half: str
+    player: str
+    team: str
+    score: str
+    detail: str
+    estimated_video_ts: float  # seconds — from kickoff offset formula
+    refined_video_ts: float  # seconds — after audio energy refinement
+    confidence: float  # 0.0–1.0, how well the audio corroborated the estimate
+
+    def to_dict(self) -> dict[str, Any]:
+        d = dataclasses.asdict(self)
+        d["event_type"] = self.event_type.value
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AlignedEvent:
+        data = dict(data)
+        data["event_type"] = EventType(data["event_type"])
+        return cls(**data)
+
+    @property
+    def display_time(self) -> str:
+        """Human-readable match time, e.g. ``83'`` or ``90+3'``."""
+        if self.extra_minute:
+            return f"{self.minute}+{self.extra_minute}'"
+        return f"{self.minute}'"
 
 
 @dataclass
