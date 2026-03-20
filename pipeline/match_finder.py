@@ -7,6 +7,7 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -95,11 +96,15 @@ def search_fixtures(
     team1: str,
     team2: str,
     date: str | None = None,
+    *,
+    season: int | None = None,
 ) -> list[dict[str, Any]]:
     """Search API-Football for fixtures between *team1* and *team2*.
 
-    Best-effort — returns an empty list if the API is unreachable or the
-    key is not configured.
+    Uses each team's schedule for *season* (calendar year the league season
+    starts, e.g. ``2025`` for 2025–26) and keeps rows where both team IDs
+    appear as home and away. Best-effort — returns an empty list if the API
+    is unreachable or the key is not configured.
     """
     if not API_FOOTBALL_KEY:
         log.warning("API_FOOTBALL_KEY not set — skipping fixture search")
@@ -111,18 +116,22 @@ def search_fixtures(
         if team1_id is None or team2_id is None:
             return []
 
-        params = f"team={team1_id}&season=2024"
+        season_year = season if season is not None else datetime.now().year
+        params = f"team={team1_id}&season={season_year}"
         if date:
             params += f"&date={date}"
         raw = _api_get(f"/fixtures?{params}")
         fixtures: list[dict[str, Any]] = []
 
         for item in raw.get("response", []):
-            home = item["teams"]["home"]["name"]
-            away = item["teams"]["away"]["name"]
-            names = {home.lower(), away.lower()}
-            if team2.lower() not in names:
+            home_team = item["teams"]["home"]
+            away_team = item["teams"]["away"]
+            hid = int(home_team["id"])
+            aid = int(away_team["id"])
+            if {hid, aid} != {team1_id, team2_id}:
                 continue
+            home = home_team["name"]
+            away = away_team["name"]
             fixtures.append(
                 {
                     "fixture_id": item["fixture"]["id"],

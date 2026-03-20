@@ -7,6 +7,7 @@ transcription → event alignment → clip building.
 from __future__ import annotations
 
 import sys
+from datetime import datetime
 from typing import Any
 
 from pipeline.clip_builder import ClipBuilderError, build_highlights
@@ -17,6 +18,7 @@ from pipeline.match_finder import (
     download_and_save,
     find_match,
     is_url,
+    search_fixtures,
 )
 from pipeline.transcription import TranscriptionError, transcribe
 
@@ -65,16 +67,98 @@ def _pick_youtube_result(candidates: list[dict[str, Any]]) -> dict[str, Any] | N
     return candidates[0]
 
 
-def _ask_fixture_id() -> int | None:
-    """Prompt for an API-Football fixture ID (or skip)."""
-    raw = _prompt("\n  Enter API-Football fixture ID (or press Enter to skip): ")
-    if not raw:
+def _parse_two_teams(raw: str) -> tuple[str, str] | None:
+    """Split ``"Team A, Team B"`` into two names. Returns ``None`` if invalid."""
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    if len(parts) < 2:
+        return None
+    return parts[0], parts[1]
+
+
+def _link_fixture_interactive() -> int | None:
+    """Prompt for an API-Football fixture: manual ID, team search, or skip."""
+    print("\n  Link this video to API-Football (for goals, cards, etc.):")
+    print("    [i]  Enter fixture ID (from dashboard or API)")
+    print("    [s]  Search by two team names")
+    print("    [Enter]  Skip — no API events (pipeline stops after download)")
+    choice = _prompt("  Choice [i/s/Enter]: ").strip().lower()
+
+    if choice == "i":
+        raw = _prompt("  Fixture ID: ")
+        if not raw:
+            return None
+        try:
+            return int(raw)
+        except ValueError:
+            print("  Not a valid number.")
+            return None
+
+    if choice == "s":
+        return _pick_fixture_from_team_search()
+
+    return None
+
+
+def _pick_fixture_from_team_search() -> int | None:
+    """Prompt for teams and optional date/season, then pick a fixture from results."""
+    raw = _prompt('  Two teams, comma-separated (e.g. "Liverpool, Arsenal"): ')
+    teams = _parse_two_teams(raw)
+    if not teams:
+        print("  Need two names separated by a comma.")
+        return None
+    team1, team2 = teams
+
+    date_str = _prompt("  Match date YYYY-MM-DD (optional, Enter to skip): ").strip()
+    date = date_str or None
+
+    default_year = datetime.now().year
+    season_s = _prompt(
+        f"  Season starting year (e.g. {default_year} for {default_year}–{default_year + 1}, "
+        "Enter for default): "
+    ).strip()
+    season: int | None = None
+    if season_s:
+        try:
+            season = int(season_s)
+        except ValueError:
+            print("  Ignoring invalid season — using default year.")
+
+    fixtures = search_fixtures(team1, team2, date=date, season=season)
+    if not fixtures:
+        print(
+            "  No fixtures found. Try different spellings, "
+            "a date within your API plan limits, or another season."
+        )
+        raw_id = _prompt("  Enter fixture ID manually, or Enter to skip: ")
+        if raw_id:
+            try:
+                return int(raw_id)
+            except ValueError:
+                print("  Not a valid number.")
+        return None
+
+    print(f"\n  Found {len(fixtures)} fixture(s):\n")
+    for i, fx in enumerate(fixtures, 1):
+        goals = fx.get("score")
+        score_str = ""
+        if isinstance(goals, dict):
+            gh, ga = goals.get("home"), goals.get("away")
+            if gh is not None and ga is not None:
+                score_str = f" {gh}-{ga}"
+        print(f"  [{i}] {fx['home_team']} vs {fx['away_team']}{score_str}")
+        print(f"      {fx['league']} ({fx['date']})  id={fx['fixture_id']}\n")
+
+    pick = _prompt(f"  Pick [1-{len(fixtures)}] or Enter to skip: ")
+    if not pick:
         return None
     try:
-        return int(raw)
+        idx = int(pick) - 1
+        if 0 <= idx < len(fixtures):
+            return int(fixtures[idx]["fixture_id"])
     except ValueError:
-        print("  Not a valid number — skipping fixture lookup.")
-        return None
+        pass
+    print("  Invalid choice, skipping.")
+    return None
 
 
 def _ask_kickoff_time(half: str) -> float | None:
@@ -129,7 +213,7 @@ def _handle_query(user_input: str) -> None:
     fixture_id: int | None = None
 
     if is_url(user_input):
-        fixture_id = _ask_fixture_id()
+        fixture_id = _link_fixture_interactive()
         print("\n[1/5] Downloading video...")
         metadata = download_and_save(user_input, fixture_id=fixture_id, skip_duration_check=False)
     else:
@@ -142,7 +226,7 @@ def _handle_query(user_input: str) -> None:
                 return
             chosen = {"url": url_fallback, "video_id": "", "title": url_fallback}
 
-        fixture_id = _ask_fixture_id()
+        fixture_id = _link_fixture_interactive()
         print("\n[1/5] Downloading video...")
         metadata = download_and_save(
             chosen["url"], fixture_id=fixture_id, skip_duration_check=False

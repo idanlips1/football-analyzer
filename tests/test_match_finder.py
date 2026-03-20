@@ -150,8 +150,8 @@ class TestSearchFixtures:
                         },
                         "league": {"name": "Premier League"},
                         "teams": {
-                            "home": {"name": "Liverpool"},
-                            "away": {"name": "Arsenal"},
+                            "home": {"id": 40, "name": "Liverpool"},
+                            "away": {"id": 42, "name": "Arsenal"},
                         },
                         "goals": {"home": 2, "away": 1},
                     },
@@ -196,6 +196,45 @@ class TestSearchFixtures:
 
         results = search_fixtures("Nonexistent FC", "Arsenal")
         assert results == []
+
+    @patch("pipeline.match_finder.urllib.request.urlopen")
+    def test_excludes_fixtures_when_opponent_not_team2(self, mock_urlopen: MagicMock) -> None:
+        wrong_opponent = json.dumps(
+            {
+                "response": [
+                    {
+                        "fixture": {"id": 999, "date": "2025-12-01T20:00:00+00:00"},
+                        "league": {"name": "Premier League"},
+                        "teams": {
+                            "home": {"id": 40, "name": "Liverpool"},
+                            "away": {"id": 99, "name": "Chelsea"},
+                        },
+                        "goals": {"home": 1, "away": 0},
+                    },
+                ]
+            }
+        ).encode()
+        mock_urlopen.side_effect = [
+            self._ctx(self._team_response(40, "Liverpool")),
+            self._ctx(self._team_response(42, "Arsenal")),
+            self._ctx(wrong_opponent),
+        ]
+
+        results = search_fixtures("Liverpool", "Arsenal")
+        assert results == []
+
+    @patch("pipeline.match_finder.urllib.request.urlopen")
+    def test_passes_season_to_api(self, mock_urlopen: MagicMock) -> None:
+        mock_urlopen.side_effect = [
+            self._ctx(self._team_response(40, "Liverpool")),
+            self._ctx(self._team_response(42, "Arsenal")),
+            self._ctx(self._fixtures_response()),
+        ]
+
+        search_fixtures("Liverpool", "Arsenal", season=2023)
+
+        fixtures_call = mock_urlopen.call_args_list[2]
+        assert "season=2023" in fixtures_call[0][0].full_url
 
 
 # ── find_match ──────────────────────────────────────────────────────────────
