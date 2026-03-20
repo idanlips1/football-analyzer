@@ -20,19 +20,30 @@ TRANSCRIPTION_FILENAME = "transcription.json"
 FIRST_HALF_KEYWORDS: list[str] = [
     "kick off",
     "kicked off",
-    "underway",
+    "kicks off",
     "we're off",
-    "here we go",
-    "the match begins",
     "we are off",
     "we're away",
+    "the match begins",
+    "the match is underway",
+    "game is underway",
+    "match is underway",
+    "and we are underway",
+    "and we're underway",
 ]
+# Intentionally excludes bare "underway" and "here we go" — too generic,
+# frequently appears in pre-match commentary and ad breaks.
+
 SECOND_HALF_KEYWORDS: list[str] = [
     "second half",
     "second 45",
     "back underway",
     "second period",
-    "half underway",
+    "second half underway",
+    "second half is underway",
+    "second half kicks off",
+    "second half under way",
+    "second 45 minutes",
 ]
 
 _SECOND_HALF_GUARD_SECONDS = 1800  # 30 minutes after first-half kickoff
@@ -77,14 +88,29 @@ def identify_commentators(
     return sorted(commentators)
 
 
-def detect_kickoffs(utterances: list[dict[str, Any]]) -> dict[str, float | None]:
+def detect_kickoffs(
+    utterances: list[dict[str, Any]],
+    commentator_speakers: list[str] | None = None,
+) -> dict[str, float | None]:
     """Scan utterances for first- and second-half kickoff signals.
+
+    When *commentator_speakers* is provided, only those speakers are considered
+    (reduces false positives from stadium PA, sideline reporters, etc.).
 
     Returns timestamps (in seconds) of the earliest matching utterance for
     each half, or ``None`` when no match is found.
     """
+    # Filter to commentator utterances when speaker labels are available.
+    if commentator_speakers:
+        candidate_utts = [u for u in utterances if u["speaker"] in commentator_speakers]
+        if not candidate_utts:
+            # Fallback: use all utterances if filtering left nothing
+            candidate_utts = utterances
+    else:
+        candidate_utts = utterances
+
     first_half_ms: float | None = None
-    for utt in utterances:
+    for utt in candidate_utts:
         text_lower = utt["text"].lower()
         if any(kw in text_lower for kw in FIRST_HALF_KEYWORDS) and (
             first_half_ms is None or utt["start"] < first_half_ms
@@ -96,7 +122,7 @@ def detect_kickoffs(utterances: list[dict[str, Any]]) -> dict[str, float | None]
     if first_half_ms is not None:
         guard_ms = first_half_ms + _SECOND_HALF_GUARD_SECONDS * 1000
 
-    for utt in utterances:
+    for utt in candidate_utts:
         if guard_ms is not None and utt["start"] <= guard_ms:
             continue
         text_lower = utt["text"].lower()
@@ -137,7 +163,10 @@ def transcribe(metadata: dict[str, Any]) -> dict[str, Any]:
         log.info("Stage 2 cache hit — loading existing transcription")
         cached: dict[str, Any] = json.loads(transcription_path.read_text())
         if "kickoff_first_half" not in cached:
-            kickoffs = detect_kickoffs(cached.get("utterances", []))
+            kickoffs = detect_kickoffs(
+                cached.get("utterances", []),
+                commentator_speakers=cached.get("commentator_speakers"),
+            )
             cached.update(kickoffs)
             transcription_path.write_text(json.dumps(cached, indent=2))
             log.info("Backfilled kickoff fields into cached transcription")
@@ -167,8 +196,8 @@ def transcribe(metadata: dict[str, Any]) -> dict[str, Any]:
         ", ".join(commentator_labels),
     )
 
-    # 2d. Detect kickoff timestamps
-    kickoffs = detect_kickoffs(utterances)
+    # 2d. Detect kickoff timestamps (commentator-filtered)
+    kickoffs = detect_kickoffs(utterances, commentator_speakers=commentator_labels)
 
     # 2e. Build and cache result
     result: dict[str, Any] = {

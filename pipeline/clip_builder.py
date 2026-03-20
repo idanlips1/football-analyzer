@@ -102,11 +102,18 @@ def enforce_budget(
     clips: list[dict[str, Any]],
     budget_seconds: float = DEFAULT_HIGHLIGHTS_DURATION_SECONDS,
 ) -> list[dict[str, Any]]:
-    """Drop lowest-priority clips until total duration fits *budget_seconds*.
+    """Select clips in priority order until *budget_seconds* is consumed.
+
+    All fully-fitting clips are kept.  If remaining budget is < the next
+    clip's full duration but ≥ a 5-second minimum, the clip is trimmed from
+    the end (post-roll is shortened) rather than dropped entirely — this
+    avoids wasting budget near the limit.
 
     At least one clip is always kept even if it alone exceeds the budget.
     Result is re-sorted chronologically.
     """
+    _MIN_TRIM_SECONDS = 5.0
+
     total = sum(c["clip_end"] - c["clip_start"] for c in clips)
     if total <= budget_seconds:
         return sorted(clips, key=lambda c: c["clip_start"])
@@ -116,10 +123,18 @@ def enforce_budget(
     remaining = budget_seconds
 
     for clip in by_priority:
+        if remaining <= 0:
+            break
         duration = clip["clip_end"] - clip["clip_start"]
-        if not selected or remaining >= duration:
+        if remaining >= duration:
             selected.append(clip)
             remaining -= duration
+        elif remaining >= _MIN_TRIM_SECONDS and (not selected or remaining > 0):
+            # Trim this clip from the end to fill the remaining budget.
+            trimmed = dict(clip)
+            trimmed["clip_end"] = trimmed["clip_start"] + remaining
+            selected.append(trimmed)
+            remaining = 0
 
     if not selected:
         selected.append(by_priority[0])

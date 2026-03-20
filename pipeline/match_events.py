@@ -103,7 +103,7 @@ _EVENT_TYPE_MAP: dict[tuple[str, str], EventType] = {
     ("Goal", "Normal Goal"): EventType.GOAL,
     ("Goal", "Own Goal"): EventType.OWN_GOAL,
     ("Goal", "Penalty"): EventType.PENALTY,
-    ("Goal", "Missed Penalty"): EventType.OTHER,
+    ("Goal", "Missed Penalty"): EventType.MISSED_PENALTY,
 }
 
 _CARD_DETAIL_MAP: dict[str, EventType] = {

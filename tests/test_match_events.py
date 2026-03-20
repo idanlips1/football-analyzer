@@ -97,7 +97,7 @@ class TestMapEventType:
         assert _map_event_type("Goal", "Penalty") == EventType.PENALTY
 
     def test_missed_penalty(self) -> None:
-        assert _map_event_type("Goal", "Missed Penalty") == EventType.OTHER
+        assert _map_event_type("Goal", "Missed Penalty") == EventType.MISSED_PENALTY
 
     def test_yellow_card(self) -> None:
         assert _map_event_type("Card", "Yellow Card") == EventType.YELLOW_CARD

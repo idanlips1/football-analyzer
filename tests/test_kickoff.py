@@ -30,7 +30,7 @@ class TestDetectKickoffs:
 
     def test_both_halves_detected(self) -> None:
         utterances = [
-            _utt("A", "here we go at Old Trafford", 300_000, 305_000),
+            _utt("A", "and we are underway at Old Trafford", 300_000, 305_000),
             _utt("A", "half time now", 2_700_000, 2_705_000),
             _utt("B", "the second half is back underway", 3_500_000, 3_505_000),
         ]
@@ -54,7 +54,7 @@ class TestDetectKickoffs:
 
     def test_multiple_first_half_picks_earliest(self) -> None:
         utterances = [
-            _utt("A", "here we go", 200_000, 205_000),
+            _utt("A", "kick off at the stadium", 200_000, 205_000),
             _utt("B", "we're off and running", 350_000, 355_000),
             _utt("A", "the match is underway", 400_000, 405_000),
         ]

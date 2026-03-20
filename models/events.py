@@ -34,6 +34,7 @@ class EventType(StrEnum):
     COUNTER_ATTACK = "counter_attack"
     CELEBRATION = "celebration"
     PENALTY = "penalty"
+    MISSED_PENALTY = "missed_penalty"
     VAR_REVIEW = "var_review"
     NEAR_MISS = "near_miss"
     RED_CARD = "red_card"

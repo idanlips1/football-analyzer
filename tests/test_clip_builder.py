@@ -285,8 +285,33 @@ class TestEnforceBudget:
                 event_type="yellow_card",
             ),
         ]
-        # 45 + 45 + 15 = 105s total; budget = 95s → should drop yellow card
+        # 45 + 45 + 15 = 105s total; budget = 95s.
+        # Both goals (90s) fit; remaining = 5s which equals _MIN_TRIM_SECONDS,
+        # so yellow card is trimmed to 5s rather than dropped.
         result = enforce_budget(clips, budget_seconds=95.0)
+        assert len(result) == 3
+        total = sum(c["clip_end"] - c["clip_start"] for c in result)
+        assert total <= 95.0
+        # Yellow card clip should be trimmed, not at its original end
+        yc = next(c for c in result if c["event_type"] == "yellow_card")
+        assert yc["clip_end"] < 315.0
+
+    def test_over_budget_drops_lowest_priority_below_min_trim(self) -> None:
+        from pipeline.clip_builder import enforce_budget
+
+        clips = [
+            _clip(clip_start=100.0, clip_end=145.0, priority=0, event_type="goal"),
+            _clip(clip_start=200.0, clip_end=248.0, priority=0, event_type="goal"),
+            _clip(
+                clip_start=300.0,
+                clip_end=315.0,
+                priority=8,
+                event_type="yellow_card",
+            ),
+        ]
+        # 45 + 48 + 15 = 108s total; budget = 94s → 94-45-48=1s remaining,
+        # which is below _MIN_TRIM_SECONDS=5s, so yellow card is dropped.
+        result = enforce_budget(clips, budget_seconds=94.0)
         assert len(result) == 2
         for c in result:
             assert c["event_type"] != "yellow_card"
