@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Automatic Football Highlights Generator — a Python pipeline that takes a full match video (~90 min) and produces a ~2-minute highlights clip by detecting commentator excitement signals (vocal energy, keywords, LLM classification).
+Automatic Football Highlights Generator — takes a full match video (~90 min) and produces a highlights clip using **API-Football match events** (goals, cards, VAR, etc.) aligned to the video via **transcription-based kickoff detection** and **utterance refinement**, then **FFmpeg** cutting and concatenation.
 
-**Core idea:** Commentator voice = highlight detector. Energy spikes + excited language → exciting moments → clip selection.
+**Primary path:** API tells *what* happened and when (match minute); transcription tells *where* that is in the video (kickoff anchors + nearest utterance). The older LLM excitement pipeline (`excitement.py`, `edr.py`, `filtering.py`) remains in the repo but is not used by `main.py`.
 
 ## Commands
 
@@ -15,6 +15,9 @@ Automatic Football Highlights Generator — a Python pipeline that takes a full 
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 pre-commit install
+
+# Run (interactive CLI — no CLI flags)
+python main.py
 
 # Run tests
 pytest                          # all tests with coverage
@@ -28,52 +31,54 @@ bandit -r . -c pyproject.toml
 ```
 
 **Environment:** Requires `.env` with:
-- `ASSEMBLYAI_API_KEY=<key>` — Stage 2 (transcription)
-- `AZURE_OPENAI_API_KEY=<key>` — Stage 3 (excitement analysis)
-- `AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com` — Stage 3
-- `AZURE_OPENAI_DEPLOYMENT=<deployment-name>` — Stage 3
-- `AZURE_OPENAI_API_VERSION=2024-10-21` — Stage 3 (optional, defaults to `2024-10-21`)
+
+- `ASSEMBLYAI_API_KEY=<key>` — transcription (AssemblyAI)
+- `API_FOOTBALL_KEY=<key>` — [API-Football](https://www.api-football.com/) via `v3.football.api-sports.io` (RapidAPI header auth). Free tier has a **recent-dates-only** restriction; historical fixtures may need a paid plan.
+- Optional (legacy / unused by default path): `AZURE_OPENAI_*`, `OPENAI_API_KEY` — old excitement stages
 
 ## Architecture
 
-The pipeline is a sequential 5-stage process. Each stage writes cached output to `pipeline_workspace/<video_id>/` so expensive re-runs (network, APIs) are skipped automatically.
+Cached outputs live under `pipeline_workspace/<video_id>/` so expensive steps (download, APIs, FFmpeg) can be skipped on re-run.
+
+**Current pipeline (API-driven):**
 
 ```
-YouTube URL → [1: ingestion] → [2: transcription] → [3: excitement] → [4: EDR] → [4b: filtering] → [5: video] → highlights.mp4
+Text query or URL → match_finder → match_events → transcription (+ kickoffs)
+    → event_aligner → clip_builder → highlights.mp4
 ```
 
-| Stage | Module | Status | Output File |
-|-------|--------|--------|-------------|
-| 1 | `pipeline/ingestion.py` | ✅ Done | `metadata.json`, `video.mp4` |
-| 2 | `pipeline/transcription.py` | ✅ Done | `transcription.json` |
-| 3 | `pipeline/excitement.py` | 🚧 Stub | `excitement.json` |
-| 4 | `pipeline/edr.py` | 🚧 Stub | `edr.json` |
-| 4b | `pipeline/filtering.py` | 🚧 Stub | `filtered_edr.json` |
-| 5 | `pipeline/video.py` | 🚧 Stub | `highlights.mp4` |
+| Stage | Module | Output (typical) |
+|-------|--------|------------------|
+| 1 | `pipeline/match_finder.py` | `metadata.json`, downloaded `*.mp4` |
+| 2 | `pipeline/match_events.py` | `match_events.json` |
+| 3 | `pipeline/transcription.py` | `transcription.json` (+ `kickoff_first_half`, `kickoff_second_half`) |
+| 4 | `pipeline/event_aligner.py` | `aligned_events.json` |
+| 5 | `pipeline/clip_builder.py` | `clip_manifest.json`, `clips/`, `highlights.mp4` |
 
-**Key modules:**
-- `config/settings.py` — all thresholds, paths, API keys
-- `config/keywords.py` — football excitement keywords for Stage 3
-- `utils/ffmpeg.py` — FFmpeg/ffprobe wrappers (audio extraction, duration probing)
-- `utils/logger.py` — `get_logger(__name__)` used throughout
-- `models/events.py` — EDR entry and event type data models (stub)
+**Config:**
 
-**Commentator identification** (`transcription.py:identify_commentators`): speaker with ≥30% of top speaker's talk time is considered a commentator (`COMMENTATOR_TIME_RATIO = 0.3` in settings).
+- `config/settings.py` — paths, API keys, `DEFAULT_HIGHLIGHTS_DURATION_SECONDS`, `MERGE_GAP_SECONDS`
+- `config/clip_windows.py` — per-`EventType` pre/post roll and priority for budget trimming
+- `models/events.py` — `MatchEvent`, `AlignedEvent`, `EventType`
+
+**Utilities:** `utils/ffmpeg.py`, `utils/logger.py`
+
+**Commentator identification** (`transcription.py`): speakers above `COMMENTATOR_TIME_RATIO` of the top speaker’s talk time are commentators.
 
 ## Testing
 
-- `tests/conftest.py` has two key fixtures: `tmp_workspace` (isolates from real `pipeline_workspace/`) and `fake_ffprobe_duration` (mocks FFmpeg calls)
-- Stages 3–5 and `models/events.py` use a TDD approach — write tests before implementation
-- Coverage targets: `pipeline/`, `models/`, `config/`, `utils/`
+- `tests/conftest.py`: `tmp_workspace` monkeypatches `PIPELINE_WORKSPACE` per module; `fake_ffprobe_duration` mocks FFmpeg
+- New pipeline modules are covered with unit tests; mock external I/O (yt-dlp, HTTP, AssemblyAI)
 
 ## gstack
 
 Use the `/browse` skill from gstack for all web browsing. Never use `mcp__claude-in-chrome__*` tools.
 
 Available skills:
+
 - `/plan-ceo-review` — CEO-level plan review
 - `/plan-eng-review` — Engineering plan review
-- `/plan-design-review` — Design plan review
+- `/plan-design-review` — Design review
 - `/review` — Code review
 - `/ship` — Ship a change
 - `/browse` — Web browsing (use this for ALL web browsing)
@@ -90,5 +95,5 @@ If gstack skills aren't working, run `cd .claude/skills/gstack && ./setup` to bu
 
 - Python 3.12, type hints required everywhere (`mypy` enforces `disallow_untyped_defs = true`)
 - Line length: 100 characters (`ruff`)
-- Each pipeline module raises its own exception class (e.g., `IngestionError`, `TranscriptionError`)
-- Use `monkeypatch` / `unittest.mock` for external dependencies in tests (yt-dlp, AssemblyAI, FFmpeg)
+- Each pipeline module raises its own exception class (e.g., `MatchFinderError`, `TranscriptionError`)
+- Use `monkeypatch` / `unittest.mock` for external dependencies in tests (yt-dlp, AssemblyAI, FFmpeg, HTTP)

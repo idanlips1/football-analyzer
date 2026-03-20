@@ -31,11 +31,6 @@ def _prompt(msg: str, default: str = "") -> str:
     return value or default
 
 
-def _confirm(msg: str) -> bool:
-    """Ask a yes/no question. Returns True on 'y' or empty (default yes)."""
-    return _prompt(f"{msg} [Y/n] ", "y").lower().startswith("y")
-
-
 def _format_duration(seconds: float) -> str:
     h, remainder = divmod(int(seconds), 3600)
     m, s = divmod(remainder, 60)
