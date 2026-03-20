@@ -17,6 +17,26 @@ log = get_logger(__name__)
 AUDIO_FILENAME = "audio.wav"
 TRANSCRIPTION_FILENAME = "transcription.json"
 
+FIRST_HALF_KEYWORDS: list[str] = [
+    "kick off",
+    "kicked off",
+    "underway",
+    "we're off",
+    "here we go",
+    "the match begins",
+    "we are off",
+    "we're away",
+]
+SECOND_HALF_KEYWORDS: list[str] = [
+    "second half",
+    "second 45",
+    "back underway",
+    "second period",
+    "half underway",
+]
+
+_SECOND_HALF_GUARD_SECONDS = 1800  # 30 minutes after first-half kickoff
+
 
 class TranscriptionError(Exception):
     """Raised when transcription or audio extraction fails."""
@@ -57,6 +77,48 @@ def identify_commentators(
     return sorted(commentators)
 
 
+def detect_kickoffs(utterances: list[dict[str, Any]]) -> dict[str, float | None]:
+    """Scan utterances for first- and second-half kickoff signals.
+
+    Returns timestamps (in seconds) of the earliest matching utterance for
+    each half, or ``None`` when no match is found.
+    """
+    first_half_ms: float | None = None
+    for utt in utterances:
+        text_lower = utt["text"].lower()
+        if any(kw in text_lower for kw in FIRST_HALF_KEYWORDS) and (
+            first_half_ms is None or utt["start"] < first_half_ms
+        ):
+            first_half_ms = utt["start"]
+
+    second_half_ms: float | None = None
+    guard_ms: float | None = None
+    if first_half_ms is not None:
+        guard_ms = first_half_ms + _SECOND_HALF_GUARD_SECONDS * 1000
+
+    for utt in utterances:
+        if guard_ms is not None and utt["start"] <= guard_ms:
+            continue
+        text_lower = utt["text"].lower()
+        if any(kw in text_lower for kw in SECOND_HALF_KEYWORDS) and (
+            second_half_ms is None or utt["start"] < second_half_ms
+        ):
+            second_half_ms = utt["start"]
+
+    kickoff_first = first_half_ms / 1000 if first_half_ms is not None else None
+    kickoff_second = second_half_ms / 1000 if second_half_ms is not None else None
+
+    log.info(
+        "Kickoff detection — first_half: %s s, second_half: %s s",
+        kickoff_first,
+        kickoff_second,
+    )
+    return {
+        "kickoff_first_half": kickoff_first,
+        "kickoff_second_half": kickoff_second,
+    }
+
+
 def transcribe(metadata: dict[str, Any]) -> dict[str, Any]:
     """Run Stage 2 of the pipeline.
 
@@ -74,6 +136,11 @@ def transcribe(metadata: dict[str, Any]) -> dict[str, Any]:
     if transcription_path.exists():
         log.info("Stage 2 cache hit — loading existing transcription")
         cached: dict[str, Any] = json.loads(transcription_path.read_text())
+        if "kickoff_first_half" not in cached:
+            kickoffs = detect_kickoffs(cached.get("utterances", []))
+            cached.update(kickoffs)
+            transcription_path.write_text(json.dumps(cached, indent=2))
+            log.info("Backfilled kickoff fields into cached transcription")
         return cached
 
     log.info("Stage 2 — transcription starting")
@@ -100,12 +167,16 @@ def transcribe(metadata: dict[str, Any]) -> dict[str, Any]:
         ", ".join(commentator_labels),
     )
 
-    # 2d. Build and cache result
+    # 2d. Detect kickoff timestamps
+    kickoffs = detect_kickoffs(utterances)
+
+    # 2e. Build and cache result
     result: dict[str, Any] = {
         "audio_filename": AUDIO_FILENAME,
         "total_utterances": len(utterances),
         "commentator_speakers": commentator_labels,
         "utterances": utterances,
+        **kickoffs,
     }
 
     transcription_path.write_text(json.dumps(result, indent=2))

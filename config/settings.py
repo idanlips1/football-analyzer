@@ -60,6 +60,6 @@ MAX_CLIP_DURATION_SECONDS: float = 45.0
 # Merge gap — consecutive excited utterances within this window are joined
 MERGE_GAP_SECONDS: float = 5.0
 
-# API-Football (apifootball.com)
+# API-Football (api-sports.io) — header-based auth with x-rapidapi-key
 API_FOOTBALL_KEY: str = os.environ.get("API_FOOTBALL_KEY", "")
-API_FOOTBALL_BASE_URL: str = "https://apiv3.apifootball.com/"
+API_FOOTBALL_BASE_URL: str = "https://v3.football.api-sports.io"
