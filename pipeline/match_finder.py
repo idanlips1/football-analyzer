@@ -4,6 +4,7 @@ and video download with metadata persistence."""
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -26,6 +27,8 @@ log = get_logger(__name__)
 
 METADATA_FILENAME = "metadata.json"
 _MIN_FULL_MATCH_SECONDS = 45 * 60
+# UEFA Champions League (API-Football league id)
+_LEAGUE_CHAMPIONS_LEAGUE = 2
 
 
 class MatchFinderError(Exception):
@@ -92,6 +95,155 @@ def search_youtube(
     return results
 
 
+def fetch_video_title(url: str) -> str:
+    """Return the YouTube title without downloading the video."""
+    try:
+        with yt_dlp.YoutubeDL(
+            {"quiet": True, "no_warnings": True, "skip_download": True},
+        ) as ydl:
+            info = ydl.extract_info(url, download=False)
+        if not info:
+            return ""
+        return str(info.get("title") or "")
+    except Exception:
+        log.exception("Could not fetch video title for fixture lookup")
+        return ""
+
+
+def parse_teams_from_video_title(title: str) -> tuple[str, str] | None:
+    """Extract two club names from a typical full-match upload title."""
+    t = title.strip()
+    if "|" in t:
+        t = t.split("|", 1)[0].strip()
+    t = re.sub(r"\s*\([^)]*\)\s*$", "", t).strip()
+
+    m_score = re.match(r"^(.+?)\s+\d+\s*-\s*\d+\s+(.+)$", t)
+    if m_score:
+        return m_score.group(1).strip(), m_score.group(2).strip()
+
+    m_vs = re.match(r"^(.+?)\s+(?:vs\.?|v\.?)\s+(.+)$", t, re.IGNORECASE)
+    if m_vs:
+        return m_vs.group(1).strip(), m_vs.group(2).strip()
+
+    return None
+
+
+def extract_years_from_text(text: str) -> list[int]:
+    """Collect plausible calendar years (20xx) from *text*."""
+    return [int(y) for y in re.findall(r"\b(20\d{2})\b", text)]
+
+
+def infer_league_id_from_query(query: str) -> int | None:
+    """Map free-text *query* to an API-Football league id when obvious."""
+    q = query.lower()
+    if "champions league" in q or re.search(r"\bucl\b", q):
+        return _LEAGUE_CHAMPIONS_LEAGUE
+    return None
+
+
+def _fixture_row_from_api_item(item: dict[str, Any]) -> dict[str, Any]:
+    home_team = item["teams"]["home"]
+    away_team = item["teams"]["away"]
+    league = item.get("league") or {}
+    return {
+        "fixture_id": item["fixture"]["id"],
+        "home_team": home_team["name"],
+        "away_team": away_team["name"],
+        "date": item["fixture"]["date"],
+        "league": league.get("name", ""),
+        "league_id": int(league["id"]) if league.get("id") is not None else 0,
+        "score": item.get("goals"),
+    }
+
+
+def _fixture_date_year(iso_date: str) -> int:
+    return int(str(iso_date)[:4])
+
+
+def fetch_headtohead_fixtures(
+    team1: str,
+    team2: str,
+    *,
+    season: int | None = None,
+    league: int | None = None,
+    last: int = 80,
+) -> list[dict[str, Any]]:
+    """Head-to-head fixtures between two team names (resolved via search)."""
+    if not API_FOOTBALL_KEY:
+        log.warning("API_FOOTBALL_KEY not set — skipping head-to-head lookup")
+        return []
+
+    try:
+        team1_id = _resolve_team_id(team1)
+        team2_id = _resolve_team_id(team2)
+        if team1_id is None or team2_id is None:
+            return []
+
+        parts = [f"h2h={team1_id}-{team2_id}", f"last={last}"]
+        if season is not None:
+            parts.append(f"season={season}")
+        if league is not None:
+            parts.append(f"league={league}")
+        raw = _api_get(f"/fixtures/headtohead?{'&'.join(parts)}")
+        rows: list[dict[str, Any]] = []
+        for item in raw.get("response", []):
+            rows.append(_fixture_row_from_api_item(item))
+        log.info("Head-to-head returned %d fixtures", len(rows))
+        return rows
+
+    except Exception:
+        log.exception("API-Football head-to-head lookup failed")
+        return []
+
+
+def resolve_fixture_for_video(
+    user_query: str,
+    video_title: str,
+) -> tuple[int | None, list[dict[str, Any]]]:
+    """Pick a single fixture id from the video title and query, or return candidates.
+
+    Returns ``(fixture_id, [])`` when unique; ``(None, rows)`` when the user
+    should choose; ``(None, [])`` when parsing or API lookup failed.
+    """
+    teams = parse_teams_from_video_title(video_title)
+    if not teams:
+        log.info("Could not parse two teams from title: %s", video_title[:80])
+        return None, []
+
+    a, b = teams
+    league_hint = infer_league_id_from_query(user_query + " " + video_title)
+    years = extract_years_from_text(user_query + " " + video_title)
+    year_set = set(years)
+    for y in list(years):
+        year_set.add(y - 1)
+
+    rows = fetch_headtohead_fixtures(a, b, league=league_hint, last=100)
+    if not rows and league_hint is not None:
+        rows = fetch_headtohead_fixtures(a, b, last=100)
+
+    if not rows:
+        return None, []
+
+    def sort_key(r: dict[str, Any]) -> str:
+        return str(r["date"])
+
+    rows_sorted = sorted(rows, key=sort_key, reverse=True)
+
+    if year_set:
+        filtered = [r for r in rows_sorted if _fixture_date_year(str(r["date"])) in year_set]
+        if len(filtered) == 1:
+            return int(filtered[0]["fixture_id"]), []
+        if len(filtered) > 1:
+            return None, sorted(filtered, key=sort_key, reverse=True)
+        # No row matched listed years — offer the most recent meetings instead
+        return None, rows_sorted[:12]
+
+    if len(rows_sorted) == 1:
+        return int(rows_sorted[0]["fixture_id"]), []
+
+    return None, rows_sorted[:12]
+
+
 def search_fixtures(
     team1: str,
     team2: str,
@@ -130,18 +282,7 @@ def search_fixtures(
             aid = int(away_team["id"])
             if {hid, aid} != {team1_id, team2_id}:
                 continue
-            home = home_team["name"]
-            away = away_team["name"]
-            fixtures.append(
-                {
-                    "fixture_id": item["fixture"]["id"],
-                    "home_team": home,
-                    "away_team": away,
-                    "date": item["fixture"]["date"],
-                    "league": item["league"]["name"],
-                    "score": item.get("goals"),
-                }
-            )
+            fixtures.append(_fixture_row_from_api_item(item))
 
         log.info("API-Football returned %d fixtures", len(fixtures))
         return fixtures

@@ -16,8 +16,10 @@ from pipeline.match_events import MatchEventsError, fetch_match_events
 from pipeline.match_finder import (
     MatchFinderError,
     download_and_save,
+    fetch_video_title,
     find_match,
     is_url,
+    resolve_fixture_for_video,
     search_fixtures,
 )
 from pipeline.transcription import TranscriptionError, transcribe
@@ -75,9 +77,34 @@ def _parse_two_teams(raw: str) -> tuple[str, str] | None:
     return parts[0], parts[1]
 
 
+def _pick_fixture_from_list(fixtures: list[dict[str, Any]]) -> int | None:
+    """Show numbered API rows and return the chosen fixture id."""
+    for i, fx in enumerate(fixtures, 1):
+        goals = fx.get("score")
+        score_str = ""
+        if isinstance(goals, dict):
+            gh, ga = goals.get("home"), goals.get("away")
+            if gh is not None and ga is not None:
+                score_str = f" {gh}-{ga}"
+        print(f"  [{i}] {fx['home_team']} vs {fx['away_team']}{score_str}")
+        print(f"      {fx['league']} ({fx['date']})  id={fx['fixture_id']}\n")
+
+    pick = _prompt(f"  Pick [1-{len(fixtures)}] or Enter to skip: ")
+    if not pick:
+        return None
+    try:
+        idx = int(pick) - 1
+        if 0 <= idx < len(fixtures):
+            return int(fixtures[idx]["fixture_id"])
+    except ValueError:
+        pass
+    print("  Invalid choice, skipping.")
+    return None
+
+
 def _link_fixture_interactive() -> int | None:
-    """Prompt for an API-Football fixture: manual ID, team search, or skip."""
-    print("\n  Link this video to API-Football (for goals, cards, etc.):")
+    """Fallback: manual fixture ID, team search, or skip."""
+    print("\n  Manual API-Football linking:")
     print("    [i]  Enter fixture ID (from dashboard or API)")
     print("    [s]  Search by two team names")
     print("    [Enter]  Skip — no API events (pipeline stops after download)")
@@ -138,27 +165,30 @@ def _pick_fixture_from_team_search() -> int | None:
         return None
 
     print(f"\n  Found {len(fixtures)} fixture(s):\n")
-    for i, fx in enumerate(fixtures, 1):
-        goals = fx.get("score")
-        score_str = ""
-        if isinstance(goals, dict):
-            gh, ga = goals.get("home"), goals.get("away")
-            if gh is not None and ga is not None:
-                score_str = f" {gh}-{ga}"
-        print(f"  [{i}] {fx['home_team']} vs {fx['away_team']}{score_str}")
-        print(f"      {fx['league']} ({fx['date']})  id={fx['fixture_id']}\n")
+    return _pick_fixture_from_list(fixtures)
 
-    pick = _prompt(f"  Pick [1-{len(fixtures)}] or Enter to skip: ")
-    if not pick:
-        return None
-    try:
-        idx = int(pick) - 1
-        if 0 <= idx < len(fixtures):
-            return int(fixtures[idx]["fixture_id"])
-    except ValueError:
-        pass
-    print("  Invalid choice, skipping.")
-    return None
+
+def _resolve_fixture_auto(user_query: str, video_title: str) -> int | None:
+    """Resolve fixture from title + query via API; fall back to manual prompts."""
+    print("\n  Resolving fixture via API-Football (from your search and video title)…")
+    fid, cands = resolve_fixture_for_video(user_query, video_title)
+    if fid is not None:
+        print(f"  Using fixture id={fid}.")
+        return fid
+    if len(cands) == 1:
+        only_id = int(cands[0]["fixture_id"])
+        print(f"  Using fixture id={only_id}.")
+        return only_id
+    if len(cands) > 1:
+        print(f"\n  {len(cands)} possible matches — which one is this video?\n")
+        picked = _pick_fixture_from_list(cands)
+        if picked is not None:
+            return picked
+        print("  Trying manual linking instead.")
+        return _link_fixture_interactive()
+
+    print("  Could not infer teams from the video title for API lookup.")
+    return _link_fixture_interactive()
 
 
 def _ask_kickoff_time(half: str) -> float | None:
@@ -213,7 +243,8 @@ def _handle_query(user_input: str) -> None:
     fixture_id: int | None = None
 
     if is_url(user_input):
-        fixture_id = _link_fixture_interactive()
+        title = fetch_video_title(user_input)
+        fixture_id = _resolve_fixture_auto("", title or "")
         print("\n[1/5] Downloading video...")
         metadata = download_and_save(user_input, fixture_id=fixture_id, skip_duration_check=False)
     else:
@@ -226,7 +257,7 @@ def _handle_query(user_input: str) -> None:
                 return
             chosen = {"url": url_fallback, "video_id": "", "title": url_fallback}
 
-        fixture_id = _link_fixture_interactive()
+        fixture_id = _resolve_fixture_auto(user_input, chosen.get("title") or "")
         print("\n[1/5] Downloading video...")
         metadata = download_and_save(
             chosen["url"], fixture_id=fixture_id, skip_duration_check=False

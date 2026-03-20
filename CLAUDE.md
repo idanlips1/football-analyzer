@@ -8,7 +8,7 @@ Automatic Football Highlights Generator — takes a full match video (~90 min) a
 
 **Primary path:** API tells *what* happened and when (match minute); transcription tells *where* that is in the video (kickoff anchors + nearest utterance). The older LLM excitement pipeline (`excitement.py`, `edr.py`, `filtering.py`) remains in the repo but is not used by `main.py`.
 
-**Fixture linking (`main.py`):** After choosing a video, the user can paste a fixture ID or run **`search_fixtures`** (two team names, optional date and season year) to resolve `fixture_id` without leaving the CLI.
+**Fixture linking (`main.py`):** After a YouTube pick, **`resolve_fixture_for_video`** parses teams from the video title, calls **`/fixtures/headtohead`**, and filters by year (from the user query) and **Champions League** when the query mentions it. Manual **`search_fixtures`** / fixture ID remain as fallbacks.
 
 ## Commands
 

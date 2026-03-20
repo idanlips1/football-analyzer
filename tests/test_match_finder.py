@@ -14,6 +14,8 @@ from pipeline.match_finder import (
     download_and_save,
     find_match,
     is_url,
+    parse_teams_from_video_title,
+    resolve_fixture_for_video,
     search_fixtures,
     search_youtube,
 )
@@ -148,7 +150,7 @@ class TestSearchFixtures:
                             "id": 12345,
                             "date": "2025-12-01T20:00:00+00:00",
                         },
-                        "league": {"name": "Premier League"},
+                        "league": {"id": 39, "name": "Premier League"},
                         "teams": {
                             "home": {"id": 40, "name": "Liverpool"},
                             "away": {"id": 42, "name": "Arsenal"},
@@ -204,7 +206,7 @@ class TestSearchFixtures:
                 "response": [
                     {
                         "fixture": {"id": 999, "date": "2025-12-01T20:00:00+00:00"},
-                        "league": {"name": "Premier League"},
+                        "league": {"id": 39, "name": "Premier League"},
                         "teams": {
                             "home": {"id": 40, "name": "Liverpool"},
                             "away": {"id": 99, "name": "Chelsea"},
@@ -410,3 +412,74 @@ class TestDownloadAndSave:
         mock_id.side_effect = MatchFinderError("Could not extract video ID")
         with pytest.raises(MatchFinderError, match="Could not extract"):
             download_and_save("https://bad-url.example.com")
+
+
+# ── parse_teams_from_video_title / resolve_fixture_for_video ────────────────
+
+
+class TestParseTeamsFromVideoTitle:
+    def test_liverpool_v_real_madrid(self) -> None:
+        t = "Liverpool v Real Madrid (0-1) | Champions League Final | Full Match Replay"
+        assert parse_teams_from_video_title(t) == ("Liverpool", "Real Madrid")
+
+    def test_psg_vs_bayern(self) -> None:
+        t = "PSG vs Bayern Munich (0-1) | UEFA Champions League Final | Full-match Replay"
+        assert parse_teams_from_video_title(t) == ("PSG", "Bayern Munich")
+
+    def test_score_in_middle(self) -> None:
+        t = "Real Madrid 2-1 Chelsea | FULL MATCH | Chelsea USA Tour 2024"
+        assert parse_teams_from_video_title(t) == ("Real Madrid", "Chelsea")
+
+
+class TestResolveFixtureForVideo:
+    @patch("pipeline.match_finder.fetch_headtohead_fixtures")
+    def test_returns_unique_when_single_match_in_year(
+        self,
+        mock_h2h: MagicMock,
+    ) -> None:
+        mock_h2h.return_value = [
+            {
+                "fixture_id": 999,
+                "home_team": "Liverpool",
+                "away_team": "Real Madrid",
+                "date": "2024-06-01T20:00:00+00:00",
+                "league": "UEFA Champions League",
+                "league_id": 2,
+                "score": {"home": 0, "away": 1},
+            }
+        ]
+        fid, cands = resolve_fixture_for_video(
+            "Champions League final 2024",
+            "Liverpool v Real Madrid (0-1) | Champions League Final",
+        )
+        assert fid == 999
+        assert cands == []
+
+    @patch("pipeline.match_finder.fetch_headtohead_fixtures")
+    def test_returns_candidates_when_ambiguous(self, mock_h2h: MagicMock) -> None:
+        mock_h2h.return_value = [
+            {
+                "fixture_id": 1,
+                "home_team": "A",
+                "away_team": "B",
+                "date": "2024-06-01T20:00:00+00:00",
+                "league": "UEFA Champions League",
+                "league_id": 2,
+                "score": None,
+            },
+            {
+                "fixture_id": 2,
+                "home_team": "A",
+                "away_team": "B",
+                "date": "2024-09-01T20:00:00+00:00",
+                "league": "UEFA Champions League",
+                "league_id": 2,
+                "score": None,
+            },
+        ]
+        fid, cands = resolve_fixture_for_video(
+            "Champions League final 2024",
+            "A v B | Champions League",
+        )
+        assert fid is None
+        assert len(cands) == 2
