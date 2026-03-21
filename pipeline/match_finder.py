@@ -4,9 +4,11 @@ and video download with metadata persistence."""
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +27,8 @@ log = get_logger(__name__)
 
 METADATA_FILENAME = "metadata.json"
 _MIN_FULL_MATCH_SECONDS = 45 * 60
+# UEFA Champions League (API-Football league id)
+_LEAGUE_CHAMPIONS_LEAGUE = 2
 
 
 class MatchFinderError(Exception):
@@ -37,6 +41,30 @@ class MatchFinderError(Exception):
 def is_url(text: str) -> bool:
     """Return True if *text* looks like an HTTP(S) URL."""
     return text.startswith("http://") or text.startswith("https://")
+
+
+# Pattern covers youtube.com/watch?v=ID, youtu.be/ID, youtube.com/embed/ID, etc.
+_YT_ID_RE = re.compile(
+    r"(?:youtube\.com/(?:watch\?.*?v=|embed/|v/|shorts/)|youtu\.be/)"
+    r"([a-zA-Z0-9_-]{11})"
+)
+
+
+def extract_video_id_from_url(url: str) -> str | None:
+    """Extract the YouTube video ID from a URL string without network calls.
+
+    Returns ``None`` if the URL format is not recognised.
+    """
+    m = _YT_ID_RE.search(url)
+    return m.group(1) if m else None
+
+
+def load_existing_metadata(video_id: str) -> dict[str, Any] | None:
+    """Load metadata for an already-downloaded video, or ``None``."""
+    metadata_path = PIPELINE_WORKSPACE / video_id / METADATA_FILENAME
+    if metadata_path.exists():
+        return json.loads(metadata_path.read_text())  # type: ignore[no-any-return]
+    return None
 
 
 def search_youtube(
@@ -91,15 +119,369 @@ def search_youtube(
     return results
 
 
+class VideoInfo:
+    """Lightweight container for pre-download YouTube metadata."""
+
+    __slots__ = ("title", "upload_date")
+
+    def __init__(self, title: str = "", upload_date: str = "") -> None:
+        self.title = title
+        self.upload_date = upload_date  # YYYYMMDD or ""
+
+    @property
+    def upload_year(self) -> int | None:
+        """Calendar year the video was uploaded, or ``None``."""
+        if len(self.upload_date) >= 4:
+            try:
+                return int(self.upload_date[:4])
+            except ValueError:
+                return None
+        return None
+
+
+def fetch_video_info(url: str) -> VideoInfo:
+    """Return title and upload date without downloading the video."""
+    try:
+        with yt_dlp.YoutubeDL(
+            {"quiet": True, "no_warnings": True, "skip_download": True},
+        ) as ydl:
+            info = ydl.extract_info(url, download=False)
+        if not info:
+            return VideoInfo()
+        return VideoInfo(
+            title=str(info.get("title") or ""),
+            upload_date=str(info.get("upload_date") or ""),
+        )
+    except Exception:
+        log.exception("Could not fetch video info for fixture lookup")
+        return VideoInfo()
+
+
+def fetch_video_title(url: str) -> str:
+    """Return the YouTube title without downloading the video.
+
+    Thin wrapper around :func:`fetch_video_info` for backwards compatibility.
+    """
+    return fetch_video_info(url).title
+
+
+class TitleParseResult:
+    """Parsed components from a video title."""
+
+    __slots__ = ("team_a", "team_b", "score_home", "score_away")
+
+    def __init__(
+        self,
+        team_a: str,
+        team_b: str,
+        score_home: int | None = None,
+        score_away: int | None = None,
+    ) -> None:
+        self.team_a = team_a
+        self.team_b = team_b
+        self.score_home = score_home
+        self.score_away = score_away
+
+    @property
+    def has_score(self) -> bool:
+        return self.score_home is not None and self.score_away is not None
+
+    @property
+    def teams(self) -> tuple[str, str]:
+        return self.team_a, self.team_b
+
+
+_PIPE_RE = re.compile(r"\s*[|｜]\s*")
+
+
+def parse_video_title(title: str) -> TitleParseResult | None:
+    """Extract teams and optional score from a typical full-match upload title.
+
+    Recognises patterns like:
+    - ``"Liverpool 3-1 Manchester City | ..."``
+    - ``"Liverpool v Real Madrid (0-1) | ..."``
+    - ``"FULL MATCH ｜ Liverpool 3-1 Manchester City ｜ ..."``
+    """
+    t = title.strip()
+
+    # Normalise fullwidth pipe to ASCII and split into segments
+    segments = _PIPE_RE.split(t)
+
+    # Strip common prefixes like "FULL MATCH"
+    if segments and re.match(r"^(?:FULL\s+MATCH|HIGHLIGHTS?)$", segments[0], re.IGNORECASE):
+        segments = segments[1:]
+
+    # Work with the first remaining segment (the teams + score part)
+    t = segments[0].strip() if segments else ""
+    if not t:
+        return None
+
+    # Try to extract a parenthesised score like "(0-1)" and strip it
+    paren_score: tuple[int, int] | None = None
+    paren_m = re.search(r"\((\d+)\s*-\s*(\d+)\)", t)
+    if paren_m:
+        paren_score = (int(paren_m.group(1)), int(paren_m.group(2)))
+        t = (t[: paren_m.start()] + t[paren_m.end() :]).strip()
+
+    # Pattern 1: "Team A  3-1  Team B"
+    m_score = re.match(r"^(.+?)\s+(\d+)\s*-\s*(\d+)\s+(.+)$", t)
+    if m_score:
+        return TitleParseResult(
+            team_a=m_score.group(1).strip(),
+            team_b=m_score.group(4).strip(),
+            score_home=int(m_score.group(2)),
+            score_away=int(m_score.group(3)),
+        )
+
+    # Pattern 2: "Team A vs Team B" (with optional parenthesised score already extracted)
+    m_vs = re.match(r"^(.+?)\s+(?:vs\.?|v\.?)\s+(.+)$", t, re.IGNORECASE)
+    if m_vs:
+        return TitleParseResult(
+            team_a=m_vs.group(1).strip(),
+            team_b=m_vs.group(2).strip(),
+            score_home=paren_score[0] if paren_score else None,
+            score_away=paren_score[1] if paren_score else None,
+        )
+
+    return None
+
+
+def parse_teams_from_video_title(title: str) -> tuple[str, str] | None:
+    """Extract two club names from a typical full-match upload title.
+
+    Thin wrapper around :func:`parse_video_title` for backwards compatibility.
+    """
+    result = parse_video_title(title)
+    if result is None:
+        return None
+    return result.teams
+
+
+def extract_years_from_text(text: str) -> list[int]:
+    """Collect plausible calendar years (20xx) from *text*."""
+    return [int(y) for y in re.findall(r"\b(20\d{2})\b", text)]
+
+
+def infer_league_id_from_query(query: str) -> int | None:
+    """Map free-text *query* to an API-Football league id when obvious."""
+    q = query.lower()
+    if "champions league" in q or re.search(r"\bucl\b", q):
+        return _LEAGUE_CHAMPIONS_LEAGUE
+    return None
+
+
+def _fixture_row_from_api_item(item: dict[str, Any]) -> dict[str, Any]:
+    home_team = item["teams"]["home"]
+    away_team = item["teams"]["away"]
+    league = item.get("league") or {}
+    return {
+        "fixture_id": item["fixture"]["id"],
+        "home_team": home_team["name"],
+        "away_team": away_team["name"],
+        "date": item["fixture"]["date"],
+        "league": league.get("name", ""),
+        "league_id": int(league["id"]) if league.get("id") is not None else 0,
+        "score": item.get("goals"),
+    }
+
+
+def _fixture_date_year(iso_date: str) -> int:
+    return int(str(iso_date)[:4])
+
+
+def fetch_headtohead_fixtures(
+    team1: str,
+    team2: str,
+    *,
+    season: int | None = None,
+    league: int | None = None,
+) -> list[dict[str, Any]]:
+    """Head-to-head fixtures between two team names (resolved via search).
+
+    Omits the ``last`` parameter because free plans reject it.
+    """
+    if not API_FOOTBALL_KEY:
+        log.warning("API_FOOTBALL_KEY not set — skipping head-to-head lookup")
+        return []
+
+    try:
+        team1_id = _resolve_team_id(team1)
+        team2_id = _resolve_team_id(team2)
+        if team1_id is None or team2_id is None:
+            return []
+
+        parts = [f"h2h={team1_id}-{team2_id}"]
+        if season is not None:
+            parts.append(f"season={season}")
+        if league is not None:
+            parts.append(f"league={league}")
+        raw = _api_get(f"/fixtures/headtohead?{'&'.join(parts)}")
+
+        api_errors = raw.get("errors")
+        if api_errors:
+            log.warning("API-Football H2H errors: %s", api_errors)
+
+        rows: list[dict[str, Any]] = []
+        for item in raw.get("response", []):
+            rows.append(_fixture_row_from_api_item(item))
+        log.info("Head-to-head returned %d fixtures", len(rows))
+        return rows
+
+    except Exception:
+        log.exception("API-Football head-to-head lookup failed")
+        return []
+
+
+class FixtureResolution:
+    """Result of automatic fixture resolution."""
+
+    __slots__ = (
+        "fixture_id",
+        "fixture_row",
+        "candidates",
+        "teams_parsed",
+        "team_a",
+        "team_b",
+    )
+
+    def __init__(
+        self,
+        *,
+        fixture_id: int | None = None,
+        fixture_row: dict[str, Any] | None = None,
+        candidates: list[dict[str, Any]] | None = None,
+        teams_parsed: bool = False,
+        team_a: str = "",
+        team_b: str = "",
+    ) -> None:
+        self.fixture_id = fixture_id
+        self.fixture_row = fixture_row
+        self.candidates = candidates or []
+        self.teams_parsed = teams_parsed
+        self.team_a = team_a
+        self.team_b = team_b
+
+
+def _score_matches(
+    row: dict[str, Any],
+    title_home: int,
+    title_away: int,
+) -> bool:
+    """Check whether a fixture row's score matches the title score.
+
+    The title score is *home–away as printed* (first team – second team).  The
+    API row may have the teams in either order, so we check both orientations.
+    """
+    goals = row.get("score")
+    if not isinstance(goals, dict):
+        return False
+    gh, ga = goals.get("home"), goals.get("away")
+    if gh is None or ga is None:
+        return False
+    return bool((gh == title_home and ga == title_away) or (gh == title_away and ga == title_home))
+
+
+def resolve_fixture_for_video(
+    user_query: str,
+    video_title: str,
+    *,
+    upload_year: int | None = None,
+) -> FixtureResolution:
+    """Pick a single fixture id from the video title and query, or return candidates.
+
+    *upload_year* (from yt-dlp ``upload_date``) is used as a fallback year hint
+    when neither the query nor the title contain an explicit year.
+    """
+    parsed = parse_video_title(video_title)
+    if not parsed:
+        log.info("Could not parse two teams from title: %s", video_title[:80])
+        return FixtureResolution()
+
+    a, b = parsed.teams
+    league_hint = infer_league_id_from_query(user_query + " " + video_title)
+    years = extract_years_from_text(user_query + " " + video_title)
+    year_set = set(years)
+    for y in list(years):
+        year_set.add(y - 1)
+
+    # Fall back to upload year when title/query have no explicit year
+    if not year_set and upload_year is not None:
+        log.info("No year in title/query — using upload year %d as hint", upload_year)
+        year_set = {upload_year, upload_year - 1}
+
+    rows = fetch_headtohead_fixtures(a, b, league=league_hint)
+    if not rows and league_hint is not None:
+        rows = fetch_headtohead_fixtures(a, b)
+
+    base = FixtureResolution(teams_parsed=True, team_a=a, team_b=b)
+
+    if not rows:
+        return base
+
+    def sort_key(r: dict[str, Any]) -> str:
+        return str(r["date"])
+
+    rows_sorted = sorted(rows, key=sort_key, reverse=True)
+
+    # ── Layered filtering: year → score → pick ────────────────────────
+    pool = rows_sorted
+
+    # Filter by year when available
+    if year_set:
+        year_filtered = [r for r in pool if _fixture_date_year(str(r["date"])) in year_set]
+        if year_filtered:
+            pool = year_filtered
+
+    # Filter by score when the title contains one
+    if parsed.has_score:
+        score_filtered = [
+            r
+            for r in pool
+            if _score_matches(r, parsed.score_home, parsed.score_away)  # type: ignore[arg-type]
+        ]
+        if score_filtered:
+            log.info(
+                "Score filter (%d-%d) narrowed %d → %d fixtures",
+                parsed.score_home,
+                parsed.score_away,
+                len(pool),
+                len(score_filtered),
+            )
+            pool = score_filtered
+
+    # Decide: unique match, ambiguous, or nothing
+    if len(pool) == 1:
+        base.fixture_id = int(pool[0]["fixture_id"])
+        base.fixture_row = pool[0]
+        return base
+
+    if len(pool) > 1:
+        base.candidates = sorted(pool, key=sort_key, reverse=True)[:12]
+        return base
+
+    # No matches after filtering — return full set as candidates
+    if len(rows_sorted) == 1:
+        base.fixture_id = int(rows_sorted[0]["fixture_id"])
+        base.fixture_row = rows_sorted[0]
+        return base
+
+    base.candidates = rows_sorted[:12]
+    return base
+
+
 def search_fixtures(
     team1: str,
     team2: str,
     date: str | None = None,
+    *,
+    season: int | None = None,
 ) -> list[dict[str, Any]]:
     """Search API-Football for fixtures between *team1* and *team2*.
 
-    Best-effort — returns an empty list if the API is unreachable or the
-    key is not configured.
+    Uses each team's schedule for *season* (calendar year the league season
+    starts, e.g. ``2025`` for 2025–26) and keeps rows where both team IDs
+    appear as home and away. Best-effort — returns an empty list if the API
+    is unreachable or the key is not configured.
     """
     if not API_FOOTBALL_KEY:
         log.warning("API_FOOTBALL_KEY not set — skipping fixture search")
@@ -111,28 +493,21 @@ def search_fixtures(
         if team1_id is None or team2_id is None:
             return []
 
-        params = f"team={team1_id}&season=2024"
+        season_year = season if season is not None else datetime.now().year
+        params = f"team={team1_id}&season={season_year}"
         if date:
             params += f"&date={date}"
         raw = _api_get(f"/fixtures?{params}")
         fixtures: list[dict[str, Any]] = []
 
         for item in raw.get("response", []):
-            home = item["teams"]["home"]["name"]
-            away = item["teams"]["away"]["name"]
-            names = {home.lower(), away.lower()}
-            if team2.lower() not in names:
+            home_team = item["teams"]["home"]
+            away_team = item["teams"]["away"]
+            hid = int(home_team["id"])
+            aid = int(away_team["id"])
+            if {hid, aid} != {team1_id, team2_id}:
                 continue
-            fixtures.append(
-                {
-                    "fixture_id": item["fixture"]["id"],
-                    "home_team": home,
-                    "away_team": away,
-                    "date": item["fixture"]["date"],
-                    "league": item["league"]["name"],
-                    "score": item.get("goals"),
-                }
-            )
+            fixtures.append(_fixture_row_from_api_item(item))
 
         log.info("API-Football returned %d fixtures", len(fixtures))
         return fixtures

@@ -20,7 +20,7 @@ from config.settings import (
     PIPELINE_WORKSPACE,
 )
 from models.events import AlignedEvent, seconds_to_timestamp
-from utils.ffmpeg import FFmpegError, concat_clips, cut_clip
+from utils.ffmpeg import FFmpegError, FFprobeError, concat_clips, cut_clip, get_video_duration
 from utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -196,7 +196,15 @@ def build_highlights(
     except FFmpegError as exc:
         raise ClipBuilderError(f"Failed to concatenate clips: {exc}") from exc
 
-    total_duration = sum(c["clip_end"] - c["clip_start"] for c in clips)
+    # Use the actual file duration (accounts for keyframe-seeking) with
+    # a fallback to manifest arithmetic if ffprobe fails.
+    manifest_duration = sum(c["clip_end"] - c["clip_start"] for c in clips)
+    try:
+        total_duration = get_video_duration(output_path)
+    except FFprobeError:
+        log.warning("Could not probe highlights duration — using manifest estimate")
+        total_duration = manifest_duration
+
     log.info(
         "Clip builder complete — %d clips → %s (%.0fs)",
         len(clip_paths),
