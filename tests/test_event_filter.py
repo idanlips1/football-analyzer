@@ -76,6 +76,13 @@ class TestPlayerFilter:
         assert all(e.player == "Mohamed Salah" for e in result)
 
     def test_fuzzy_name_match(self) -> None:
+        # "Mohamad Salah" is close enough to "Mohamed Salah" to score >= 0.6 in difflib
+        q = HighlightQuery(query_type=QueryType.PLAYER, player_name="Mohamad Salah")
+        result = filter_events(EVENTS, q)
+        assert len(result) == 2
+
+    def test_substring_only_match(self) -> None:
+        # "Salah" scores < 0.6 vs "Mohamed Salah" in difflib, falls through to substring
         q = HighlightQuery(query_type=QueryType.PLAYER, player_name="Salah")
         result = filter_events(EVENTS, q)
         assert len(result) == 2

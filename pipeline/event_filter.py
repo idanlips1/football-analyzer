@@ -39,9 +39,7 @@ def filter_events(
         return events
 
     if not filtered:
-        print(
-            f"  Warning: no events matched '{query.raw_query}' — showing full highlights instead."
-        )
+        log.warning("No events matched '%s' — showing full highlights instead.", query.raw_query)
         return events
 
     return filtered

@@ -54,6 +54,20 @@ class TestLocalStorage:
         result = storage.list_games()
         assert result == ["vid_complete"]
 
+    def test_list_games_game_json_only_excluded(
+        self, storage: LocalStorage, tmp_path: Path
+    ) -> None:
+        # Partial ingest: game.json written but aligned_events.json not yet — must be invisible
+        (tmp_path / "vid_partial2").mkdir()
+        (tmp_path / "vid_partial2" / "game.json").write_text("{}")
+        assert storage.list_games() == []
+
     def test_list_games_missing_root(self, tmp_path: Path) -> None:
         storage = LocalStorage(root=tmp_path / "nonexistent")
         assert storage.list_games() == []
+
+    def test_read_json_file_not_found_raises(self, storage: LocalStorage) -> None:
+        from utils.storage import StorageError
+
+        with pytest.raises(StorageError, match="not found"):
+            storage.read_json("vid1", "missing.json")
