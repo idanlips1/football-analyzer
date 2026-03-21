@@ -19,10 +19,10 @@ from config.settings import (
     API_FOOTBALL_BASE_URL,
     API_FOOTBALL_KEY,
     MIN_DURATION_SECONDS,
-    PIPELINE_WORKSPACE,
 )
 from utils.ffmpeg import FFprobeError, get_video_duration
 from utils.logger import get_logger
+from utils.storage import StorageBackend
 
 log = get_logger(__name__)
 
@@ -66,11 +66,11 @@ def extract_video_id_from_url(url: str) -> str | None:
     return m.group(1) if m else None
 
 
-def load_existing_metadata(video_id: str) -> dict[str, Any] | None:
+def load_existing_metadata(video_id: str, storage: StorageBackend) -> dict[str, Any] | None:
     """Load metadata for an already-downloaded video, or ``None``."""
-    metadata_path = PIPELINE_WORKSPACE / video_id / METADATA_FILENAME
-    if metadata_path.exists():
-        return json.loads(metadata_path.read_text())  # type: ignore[no-any-return]
+    cache_path = storage.local_path(video_id, METADATA_FILENAME)
+    if cache_path.exists():
+        return storage.read_json(video_id, METADATA_FILENAME)
     return None
 
 
@@ -525,6 +525,7 @@ def search_fixtures(
 
 def find_match(
     user_input: str,
+    storage: StorageBackend,
     *,
     skip_duration_check: bool = False,
 ) -> dict[str, Any]:
@@ -534,7 +535,7 @@ def find_match(
     * Text → search YouTube, return ``{type: "search_results", candidates: [...]}``.
     """
     if is_url(user_input):
-        return _process_url(user_input, skip_duration_check=skip_duration_check)
+        return _process_url(user_input, storage, skip_duration_check=skip_duration_check)
 
     candidates = search_youtube(user_input)
     return {"type": "search_results", "candidates": candidates}
@@ -542,6 +543,7 @@ def find_match(
 
 def download_and_save(
     url: str,
+    storage: StorageBackend,
     *,
     fixture_id: int | None = None,
     skip_duration_check: bool = False,
@@ -552,6 +554,7 @@ def download_and_save(
     """
     return _process_url(
         url,
+        storage,
         fixture_id=fixture_id,
         skip_duration_check=skip_duration_check,
     )
@@ -562,22 +565,22 @@ def download_and_save(
 
 def _process_url(
     url: str,
+    storage: StorageBackend,
     *,
     fixture_id: int | None = None,
     skip_duration_check: bool = False,
 ) -> dict[str, Any]:
     """Shared logic for find_match (URL path) and download_and_save."""
     video_id = _extract_video_id(url)
-    workspace = PIPELINE_WORKSPACE / video_id
-    metadata_path = workspace / METADATA_FILENAME
+    metadata_path = storage.local_path(video_id, METADATA_FILENAME)
 
     if metadata_path.exists():
         log.info("Cache hit — loading existing metadata for %s", video_id)
-        cached: dict[str, Any] = json.loads(metadata_path.read_text())
+        cached: dict[str, Any] = storage.read_json(video_id, METADATA_FILENAME)
         return cached
 
     log.info("Downloading video (id=%s)", video_id)
-    workspace.mkdir(parents=True, exist_ok=True)
+    workspace = storage.workspace_path(video_id)
 
     video_path = _download_video(url, workspace)
 
@@ -597,7 +600,7 @@ def _process_url(
         "fixture_id": fixture_id,
     }
 
-    metadata_path.write_text(json.dumps(metadata, indent=2))
+    storage.write_json(video_id, METADATA_FILENAME, metadata)
     log.info("Metadata saved to %s", metadata_path)
     return metadata
 

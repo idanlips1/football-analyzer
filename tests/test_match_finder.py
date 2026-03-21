@@ -22,6 +22,7 @@ from pipeline.match_finder import (
     search_fixtures,
     search_youtube,
 )
+from utils.storage import LocalStorage
 
 # ── is_url ──────────────────────────────────────────────────────────────────
 
@@ -172,6 +173,7 @@ class TestSearchFixtures:
         cm.__exit__ = MagicMock(return_value=False)
         return cm
 
+    @patch("pipeline.match_finder.API_FOOTBALL_KEY", "test-key")
     @patch("pipeline.match_finder.urllib.request.urlopen")
     def test_returns_fixtures(self, mock_urlopen: MagicMock) -> None:
         mock_urlopen.side_effect = [
@@ -187,6 +189,7 @@ class TestSearchFixtures:
         assert results[0]["home_team"] == "Liverpool"
         assert results[0]["away_team"] == "Arsenal"
 
+    @patch("pipeline.match_finder.API_FOOTBALL_KEY", "test-key")
     @patch("pipeline.match_finder.urllib.request.urlopen")
     def test_returns_empty_on_api_error(self, mock_urlopen: MagicMock) -> None:
         mock_urlopen.side_effect = Exception("Connection refused")
@@ -194,6 +197,7 @@ class TestSearchFixtures:
         results = search_fixtures("Liverpool", "Arsenal")
         assert results == []
 
+    @patch("pipeline.match_finder.API_FOOTBALL_KEY", "test-key")
     @patch("pipeline.match_finder.urllib.request.urlopen")
     def test_returns_empty_when_no_team_found(self, mock_urlopen: MagicMock) -> None:
         empty_resp = json.dumps({"response": []}).encode()
@@ -202,6 +206,7 @@ class TestSearchFixtures:
         results = search_fixtures("Nonexistent FC", "Arsenal")
         assert results == []
 
+    @patch("pipeline.match_finder.API_FOOTBALL_KEY", "test-key")
     @patch("pipeline.match_finder.urllib.request.urlopen")
     def test_excludes_fixtures_when_opponent_not_team2(self, mock_urlopen: MagicMock) -> None:
         wrong_opponent = json.dumps(
@@ -228,6 +233,7 @@ class TestSearchFixtures:
         results = search_fixtures("Liverpool", "Arsenal")
         assert results == []
 
+    @patch("pipeline.match_finder.API_FOOTBALL_KEY", "test-key")
     @patch("pipeline.match_finder.urllib.request.urlopen")
     def test_passes_season_to_api(self, mock_urlopen: MagicMock) -> None:
         mock_urlopen.side_effect = [
@@ -258,39 +264,37 @@ class TestFindMatch:
         self,
         _mock_dur: MagicMock,
         _mock_id: MagicMock,
-        tmp_workspace: Path,
+        tmp_storage: LocalStorage,
     ) -> None:
         with patch(
             "pipeline.match_finder._download_video",
             side_effect=lambda _url, w: self._fake_download(_url, w),
         ):
-            result = find_match("https://www.youtube.com/watch?v=abc123")
+            result = find_match("https://www.youtube.com/watch?v=abc123", tmp_storage)
 
         assert result["video_id"] == "abc123"
         assert result["duration_seconds"] == 5400.0
         assert result["fixture_id"] is None
-        meta_path = tmp_workspace / "abc123" / "metadata.json"
+        meta_path = tmp_storage.local_path("abc123", "metadata.json")
         assert meta_path.exists()
 
     @patch("pipeline.match_finder._extract_video_id", return_value="cached1")
     def test_url_input_returns_cached(
         self,
         _mock_id: MagicMock,
-        tmp_workspace: Path,
+        tmp_storage: LocalStorage,
     ) -> None:
-        ws = tmp_workspace / "cached1"
-        ws.mkdir()
         cached_meta = {
             "video_id": "cached1",
             "source": "https://www.youtube.com/watch?v=cached1",
             "video_filename": "match.mp4",
             "duration_seconds": 5400.0,
-            "workspace": str(ws),
+            "workspace": str(tmp_storage.workspace_path("cached1")),
             "fixture_id": None,
         }
-        (ws / "metadata.json").write_text(json.dumps(cached_meta))
+        tmp_storage.write_json("cached1", "metadata.json", cached_meta)
 
-        result = find_match("https://www.youtube.com/watch?v=cached1")
+        result = find_match("https://www.youtube.com/watch?v=cached1", tmp_storage)
 
         assert result == cached_meta
 
@@ -298,7 +302,7 @@ class TestFindMatch:
     def test_text_input_returns_search_results(
         self,
         mock_search: MagicMock,
-        tmp_workspace: Path,
+        tmp_storage: LocalStorage,
     ) -> None:
         candidates = [
             {
@@ -310,7 +314,7 @@ class TestFindMatch:
         ]
         mock_search.return_value = candidates
 
-        result = find_match("liverpool vs arsenal")
+        result = find_match("liverpool vs arsenal", tmp_storage)
 
         assert result["type"] == "search_results"
         assert result["candidates"] == candidates
@@ -322,7 +326,7 @@ class TestFindMatch:
         self,
         _mock_dur: MagicMock,
         _mock_id: MagicMock,
-        tmp_workspace: Path,
+        tmp_storage: LocalStorage,
     ) -> None:
         with (
             patch(
@@ -331,7 +335,7 @@ class TestFindMatch:
             ),
             pytest.raises(MatchFinderError, match="too short"),
         ):
-            find_match("https://www.youtube.com/watch?v=short1")
+            find_match("https://www.youtube.com/watch?v=short1", tmp_storage)
 
 
 # ── download_and_save ───────────────────────────────────────────────────────
@@ -350,7 +354,7 @@ class TestDownloadAndSave:
         self,
         _mock_dur: MagicMock,
         _mock_id: MagicMock,
-        tmp_workspace: Path,
+        tmp_storage: LocalStorage,
     ) -> None:
         with patch(
             "pipeline.match_finder._download_video",
@@ -358,6 +362,7 @@ class TestDownloadAndSave:
         ):
             result = download_and_save(
                 "https://www.youtube.com/watch?v=dl1",
+                tmp_storage,
                 fixture_id=12345,
             )
 
@@ -365,8 +370,7 @@ class TestDownloadAndSave:
         assert result["fixture_id"] == 12345
         assert result["duration_seconds"] == 5400.0
 
-        meta_path = tmp_workspace / "dl1" / "metadata.json"
-        raw = json.loads(meta_path.read_text())
+        raw = tmp_storage.read_json("dl1", "metadata.json")
         assert raw["fixture_id"] == 12345
 
     @patch("pipeline.match_finder._extract_video_id", return_value="dl2")
@@ -375,14 +379,14 @@ class TestDownloadAndSave:
         self,
         _mock_dur: MagicMock,
         _mock_id: MagicMock,
-        tmp_workspace: Path,
+        tmp_storage: LocalStorage,
     ) -> None:
         with patch(
             "pipeline.match_finder._download_video",
             side_effect=lambda _url, w: self._fake_download(_url, w),
         ) as mock_dl:
-            first = download_and_save("https://www.youtube.com/watch?v=dl2")
-            second = download_and_save("https://www.youtube.com/watch?v=dl2")
+            first = download_and_save("https://www.youtube.com/watch?v=dl2", tmp_storage)
+            second = download_and_save("https://www.youtube.com/watch?v=dl2", tmp_storage)
 
         assert first == second
         assert mock_dl.call_count == 1
@@ -393,7 +397,7 @@ class TestDownloadAndSave:
         self,
         _mock_dur: MagicMock,
         _mock_id: MagicMock,
-        tmp_workspace: Path,
+        tmp_storage: LocalStorage,
     ) -> None:
         with patch(
             "pipeline.match_finder._download_video",
@@ -401,6 +405,7 @@ class TestDownloadAndSave:
         ):
             result = download_and_save(
                 "https://www.youtube.com/watch?v=dl3",
+                tmp_storage,
                 skip_duration_check=True,
             )
 
@@ -410,11 +415,11 @@ class TestDownloadAndSave:
     def test_error_on_bad_url(
         self,
         mock_id: MagicMock,
-        tmp_workspace: Path,
+        tmp_storage: LocalStorage,
     ) -> None:
         mock_id.side_effect = MatchFinderError("Could not extract video ID")
         with pytest.raises(MatchFinderError, match="Could not extract"):
-            download_and_save("https://bad-url.example.com")
+            download_and_save("https://bad-url.example.com", tmp_storage)
 
 
 # ── parse_teams_from_video_title / resolve_fixture_for_video ────────────────
