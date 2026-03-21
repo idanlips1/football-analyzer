@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 from typing import Any
@@ -12,6 +11,7 @@ import assemblyai as aai
 from config.settings import ASSEMBLYAI_API_KEY, COMMENTATOR_TIME_RATIO
 from utils.ffmpeg import FFmpegError, extract_audio
 from utils.logger import get_logger
+from utils.storage import StorageBackend, StorageError
 
 log = get_logger(__name__)
 
@@ -465,7 +465,7 @@ def detect_kickoffs(utterances: list[dict[str, Any]]) -> dict[str, float | None]
     }
 
 
-def transcribe(metadata: dict[str, Any]) -> dict[str, Any]:
+def transcribe(metadata: dict[str, Any], storage: StorageBackend) -> dict[str, Any]:
     """Run Stage 2 of the pipeline.
 
     1. Extract audio from the video (FFmpeg).
@@ -476,24 +476,26 @@ def transcribe(metadata: dict[str, Any]) -> dict[str, Any]:
     Returns the transcription data dict.
     Skips if ``transcription.json`` already exists (cache hit).
     """
-    workspace = Path(metadata["workspace"])
-    transcription_path = workspace / TRANSCRIPTION_FILENAME
+    video_id: str = metadata["video_id"]
 
-    if transcription_path.exists():
+    try:
+        cached: dict[str, Any] = storage.read_json(video_id, TRANSCRIPTION_FILENAME)
         log.info("Stage 2 cache hit — loading existing transcription")
-        cached: dict[str, Any] = json.loads(transcription_path.read_text())
         if "kickoff_first_half" not in cached:
             kickoffs = detect_kickoffs(cached.get("utterances", []))
             cached.update(kickoffs)
-            transcription_path.write_text(json.dumps(cached, indent=2))
+            storage.write_json(video_id, TRANSCRIPTION_FILENAME, cached)
             log.info("Backfilled kickoff fields into cached transcription")
         return cached
+    except StorageError:
+        pass
 
     log.info("Stage 2 — transcription starting")
 
     # 2a. Extract audio
+    workspace = storage.workspace_path(video_id)
     video_path = workspace / metadata["video_filename"]
-    audio_path = workspace / AUDIO_FILENAME
+    audio_path = storage.local_path(video_id, AUDIO_FILENAME)
     if not audio_path.exists():
         log.info("Extracting audio from %s (this may take a few minutes)…", video_path.name)
         t0 = time.monotonic()
@@ -535,8 +537,8 @@ def transcribe(metadata: dict[str, Any]) -> dict[str, Any]:
         **kickoffs,
     }
 
-    transcription_path.write_text(json.dumps(result, indent=2))
-    log.info("Stage 2 complete — saved to %s", transcription_path)
+    storage.write_json(video_id, TRANSCRIPTION_FILENAME, result)
+    log.info("Stage 2 complete — saved %s for %s", TRANSCRIPTION_FILENAME, video_id)
     return result
 
 
