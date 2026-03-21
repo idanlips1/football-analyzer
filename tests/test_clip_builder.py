@@ -332,11 +332,11 @@ class TestEnforceBudget:
                 event_type="yellow_card",
             ),
         ]
-        # 45 + 45 + 15 = 105s total; budget = 95s → should drop yellow card
+        # 45 + 45 + 15 = 105s total; budget = 95s → should drop yellow card, keep both goals
         result = enforce_budget(clips, budget_seconds=95.0)
         assert len(result) == 2
         for c in result:
-            assert c["event_type"] != "yellow_card"
+            assert c["event_type"] == "goal"
 
     def test_single_clip_exceeding_budget_still_included(self) -> None:
         from pipeline.clip_builder import enforce_budget
@@ -356,6 +356,38 @@ class TestEnforceBudget:
         result = enforce_budget(clips, budget_seconds=600.0)
         starts = [c["clip_start"] for c in result]
         assert starts == sorted(starts)
+
+
+# ── TestQuerySlug ────────────────────────────────────────────────────────────
+
+
+class TestQuerySlug:
+    def test_normal_query(self) -> None:
+        from pipeline.clip_builder import _query_slug
+
+        q = HighlightQuery(query_type=QueryType.FULL_SUMMARY, raw_query="show me everything")
+        assert _query_slug(q) == "show_me_everything"
+
+    def test_special_chars_stripped(self) -> None:
+        from pipeline.clip_builder import _query_slug
+
+        q = HighlightQuery(query_type=QueryType.FULL_SUMMARY, raw_query="???!!!")
+        assert _query_slug(q) == QueryType.FULL_SUMMARY.value
+
+    def test_empty_raw_query_falls_back_to_type(self) -> None:
+        from pipeline.clip_builder import _query_slug
+
+        q = HighlightQuery(query_type=QueryType.EVENT_FILTER, raw_query="")
+        assert _query_slug(q) == QueryType.EVENT_FILTER.value
+
+    def test_long_query_truncated_to_40(self) -> None:
+        from pipeline.clip_builder import _query_slug
+
+        q = HighlightQuery(
+            query_type=QueryType.FULL_SUMMARY,
+            raw_query="a" * 50,
+        )
+        assert len(_query_slug(q)) == 40
 
 
 # ── TestBuildHighlights ──────────────────────────────────────────────────────

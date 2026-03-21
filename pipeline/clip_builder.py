@@ -48,6 +48,12 @@ def _interactive_confirm_overwrite(path: str) -> bool:
 
 
 def _query_slug(query: HighlightQuery) -> str:
+    """Return a filesystem-safe slug from *query*.
+
+    Non-ASCII characters (e.g. accented letters) are dropped rather than
+    transliterated — this is acceptable for a local filename slug.
+    Falls back to query_type.value when raw_query is empty or all-special-chars.
+    """
     base = query.raw_query.lower()
     slug = re.sub(r"[^a-z0-9]+", "_", base).strip("_")[:40]
     return slug or query.query_type.value
@@ -138,11 +144,13 @@ def enforce_budget(
 
     for clip in by_priority:
         duration = clip["clip_end"] - clip["clip_start"]
+        # `not selected` is the "always keep first clip" guarantee — the highest-priority
+        # clip is unconditionally included even if it alone exceeds the budget.
         if not selected or remaining >= duration:
             selected.append(clip)
             remaining -= duration
 
-    if not selected:
+    if not selected:  # safety net: by_priority is non-empty if clips is non-empty
         selected.append(by_priority[0])
 
     selected.sort(key=lambda c: c["clip_start"])
@@ -186,12 +194,9 @@ def build_highlights(
             "clips": cached_clips,
         }
 
-    events_as_dicts = [dataclasses.asdict(e) for e in events]
-    # dataclasses.asdict converts EventType to its string value; restore for from_dict
-    for d in events_as_dicts:
-        if isinstance(d.get("event_type"), str):
-            pass  # already a string value — AlignedEvent.from_dict handles it
-    clips = calculate_clip_windows(events_as_dicts, game.duration_seconds)
+    # dataclasses.asdict converts StrEnum fields to their string values, which is
+    # exactly what calculate_clip_windows / AlignedEvent.from_dict expect.
+    clips = calculate_clip_windows([dataclasses.asdict(e) for e in events], game.duration_seconds)
     clips = merge_clips(clips)
     clips = enforce_budget(clips)
 
