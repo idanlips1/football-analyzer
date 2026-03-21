@@ -97,14 +97,14 @@ def _make_aligned_events_data(
 
 
 class TestCalculateClipWindows:
-    def test_goal_at_1000s_gets_15s_pre_and_30s_post(self) -> None:
+    def test_goal_at_1000s_gets_25s_pre_and_30s_post(self) -> None:
         from pipeline.clip_builder import calculate_clip_windows
 
         events = [_aligned_event(refined_video_ts=1000.0)]
         result = calculate_clip_windows(events, video_duration=5400.0)
 
         assert len(result) == 1
-        assert result[0]["clip_start"] == pytest.approx(985.0)
+        assert result[0]["clip_start"] == pytest.approx(975.0)
         assert result[0]["clip_end"] == pytest.approx(1030.0)
 
     def test_event_near_start_clamped_to_zero(self) -> None:
@@ -148,6 +148,7 @@ class TestCalculateClipWindows:
             ),
             _aligned_event(
                 event_type="yellow_card",
+                estimated_video_ts=2000.0,
                 refined_video_ts=2000.0,
                 minute=70,
                 player="Other Player",
@@ -187,6 +188,34 @@ class TestCalculateClipWindows:
         ]
         result = calculate_clip_windows(events, video_duration=5400.0)
         assert "goal 90+4' Darwin Nunez" in result[0]["events"]
+
+    def test_pre_roll_uses_earlier_of_estimated_and_refined(self) -> None:
+        from pipeline.clip_builder import calculate_clip_windows
+
+        events = [
+            _aligned_event(
+                estimated_video_ts=1010.0,
+                refined_video_ts=1000.0,
+            ),
+        ]
+        result = calculate_clip_windows(events, video_duration=5400.0)
+        # pre_roll anchored from min(1010, 1000) = 1000 → clip_start = 975
+        assert result[0]["clip_start"] == pytest.approx(975.0)
+
+    def test_pre_roll_when_refined_after_estimated(self) -> None:
+        from pipeline.clip_builder import calculate_clip_windows
+
+        events = [
+            _aligned_event(
+                estimated_video_ts=1000.0,
+                refined_video_ts=1010.0,
+            ),
+        ]
+        result = calculate_clip_windows(events, video_duration=5400.0)
+        # pre_roll anchored from min(1000, 1010) = 1000 → clip_start = 975
+        assert result[0]["clip_start"] == pytest.approx(975.0)
+        # post_roll still from refined
+        assert result[0]["clip_end"] == pytest.approx(1040.0)
 
     def test_clip_has_priority_field(self) -> None:
         from pipeline.clip_builder import calculate_clip_windows
@@ -410,8 +439,13 @@ class TestBuildHighlights:
 
         aligned = _make_aligned_events_data(
             [
-                _aligned_event(refined_video_ts=1000.0, minute=50),
                 _aligned_event(
+                    estimated_video_ts=1000.0,
+                    refined_video_ts=1000.0,
+                    minute=50,
+                ),
+                _aligned_event(
+                    estimated_video_ts=3000.0,
                     refined_video_ts=3000.0,
                     minute=80,
                     event_type="penalty",

@@ -2,7 +2,11 @@
 
 Maps API-Football event minutes to concrete video positions using kickoff
 offsets from the transcription stage, then refines each estimate by snapping
-to the nearest commentator utterance within a ±60 s window.
+to the best commentator utterance within a ±60 s window.
+
+For high-excitement events (goals, penalties, own goals) the refinement
+prefers the latest utterance that *precedes* the estimate — capturing the
+build-up rather than the post-event reaction.
 """
 
 from __future__ import annotations
@@ -58,8 +62,16 @@ def refine_timestamp(
     estimated_ts: float,
     utterances: list[dict[str, Any]],
     energy_fn: Callable[[dict[str, Any]], float] | None = None,
+    *,
+    prefer_before: bool = False,
 ) -> tuple[float, float]:
-    """Snap *estimated_ts* to the nearest utterance within ±60 s.
+    """Snap *estimated_ts* to the best utterance within ±60 s.
+
+    When *prefer_before* is True (used for high-excitement events like goals),
+    the selector favours the latest utterance that starts **before**
+    *estimated_ts* — capturing the build-up rather than a post-event reaction.
+    If no preceding utterance exists in the window it falls back to the
+    closest one overall.
 
     Returns ``(refined_seconds, confidence)`` where confidence reflects
     proximity: 0.9 (≤15 s), 0.7 (≤30 s), 0.5 (≤60 s), or 0.3 if no
@@ -77,6 +89,15 @@ def refine_timestamp(
 
     if energy_fn is not None:
         best = max(candidates, key=energy_fn)
+    elif prefer_before:
+        before = [u for u in candidates if u["start"] / 1000.0 <= estimated_ts]
+        if before:
+            best = max(before, key=lambda u: u["start"] / 1000.0)
+        else:
+            best = min(
+                candidates,
+                key=lambda u: abs(u["start"] / 1000.0 - estimated_ts),
+            )
     else:
         best = min(
             candidates,
@@ -94,6 +115,19 @@ def refine_timestamp(
         confidence = 0.5
 
     return best_start_s, confidence
+
+
+# Event types where the commentator reacts *after* the action — we want to
+# snap to the build-up utterance (before) rather than the reaction (after).
+_PREFER_BEFORE_TYPES: frozenset[EventType] = frozenset(
+    {
+        EventType.GOAL,
+        EventType.OWN_GOAL,
+        EventType.PENALTY,
+        EventType.NEAR_MISS,
+        EventType.SHOT_ON_TARGET,
+    }
+)
 
 
 def align_events(
@@ -136,7 +170,11 @@ def align_events(
             continue
 
         estimated = estimate_video_timestamp(event, kickoff_first, kickoff_second)
-        refined, confidence = refine_timestamp(estimated, utterances)
+        refined, confidence = refine_timestamp(
+            estimated,
+            utterances,
+            prefer_before=event.event_type in _PREFER_BEFORE_TYPES,
+        )
 
         aligned.append(
             AlignedEvent(
