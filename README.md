@@ -2,6 +2,19 @@
 
 Builds a highlights video from a full football match by combining **[API-Football](https://www.api-football.com/)** event data (goals, cards, VAR, etc.) with **commentary transcription** to align match minutes to video time, then cuts and merges clips with **FFmpeg**.
 
+## Prerequisites
+
+| Dependency | Why | Install |
+|------------|-----|---------|
+| **Python 3.12+** | Runtime | [python.org](https://www.python.org/downloads/) |
+| **FFmpeg** | Video download (yt-dlp merge), audio extraction, clip cutting & concatenation | `brew install ffmpeg` (macOS) · `sudo apt install ffmpeg` (Ubuntu) · [ffmpeg.org](https://ffmpeg.org/download.html) |
+
+Verify FFmpeg is available:
+
+```bash
+ffmpeg -version
+```
+
 ## Setup
 
 ```bash

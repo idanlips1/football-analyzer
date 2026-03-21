@@ -10,6 +10,7 @@ Takes aligned events (from Stage 4) and produces a highlights video by:
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -179,8 +180,16 @@ def build_highlights(
     clips_dir.mkdir(exist_ok=True)
 
     clip_paths: list[Path] = []
+    t_cut_start = time.monotonic()
     for i, clip_dict in enumerate(clips):
         clip_path = clips_dir / f"clip_{i:03d}.mp4"
+        log.info(
+            "Cutting clip %d/%d (%.1f–%.1f s)…",
+            i + 1,
+            len(clips),
+            clip_dict["clip_start"],
+            clip_dict["clip_end"],
+        )
         try:
             cut_clip(
                 video_path,
@@ -191,11 +200,15 @@ def build_highlights(
         except FFmpegError as exc:
             raise ClipBuilderError(f"Failed to cut clip {i}: {exc}") from exc
         clip_paths.append(clip_path)
+    log.info("All %d clips cut in %.1f s", len(clips), time.monotonic() - t_cut_start)
 
+    log.info("Concatenating %d clips into final highlights…", len(clip_paths))
+    t_concat = time.monotonic()
     try:
         concat_clips(clip_paths, output_path)
     except FFmpegError as exc:
         raise ClipBuilderError(f"Failed to concatenate clips: {exc}") from exc
+    log.info("Concatenation finished in %.1f s", time.monotonic() - t_concat)
 
     # Use the actual file duration (accounts for keyframe-seeking) with
     # a fallback to manifest arithmetic if ffprobe fails.

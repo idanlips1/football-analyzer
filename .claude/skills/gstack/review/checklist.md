@@ -35,16 +35,16 @@ Be terse. For each issue: one line describing the problem, one line with the fix
 ### Pass 1 — CRITICAL
 
 #### SQL & Data Safety
-- String interpolation in SQL (even if values are `.to_i`/`.to_f` — use `sanitize_sql_array` or Arel)
+- String interpolation in SQL (even if values are `.to_i`/`.to_f` — use parameterized queries (Rails: sanitize_sql_array/Arel; Node: prepared statements; Python: parameterized queries))
 - TOCTOU races: check-then-set patterns that should be atomic `WHERE` + `update_all`
-- `update_column`/`update_columns` bypassing validations on fields that have or should have constraints
-- N+1 queries: `.includes()` missing for associations used in loops/views (especially avatar, attachments)
+- Bypassing model validations for direct DB writes (Rails: update_column; Django: QuerySet.update(); Prisma: raw queries)
+- N+1 queries: Missing eager loading (Rails: .includes(); SQLAlchemy: joinedload(); Prisma: include) for associations used in loops/views
 
 #### Race Conditions & Concurrency
-- Read-check-write without uniqueness constraint or `rescue RecordNotUnique; retry` (e.g., `where(hash:).first` then `save!` without handling concurrent insert)
-- `find_or_create_by` on columns without unique DB index — concurrent calls can create duplicates
+- Read-check-write without uniqueness constraint or catch duplicate key error and retry (e.g., `where(hash:).first` then `save!` without handling concurrent insert)
+- find-or-create without unique DB index — concurrent calls can create duplicates
 - Status transitions that don't use atomic `WHERE old_status = ? UPDATE SET new_status` — concurrent updates can skip or double-apply transitions
-- `html_safe` on user-controlled data (XSS) — check any `.html_safe`, `raw()`, or string interpolation into `html_safe` output
+- Unsafe HTML rendering (Rails: .html_safe/raw(); React: dangerouslySetInnerHTML; Vue: v-html; Django: |safe/mark_safe) on user-controlled data (XSS)
 
 #### LLM Output Trust Boundary
 - LLM-generated values (emails, URLs, names) written to DB or passed to mailers without format validation. Add lightweight guards (`EMAIL_REGEXP`, `URI.parse`, `.strip`) before persisting.
@@ -84,6 +84,12 @@ To do this: use Grep to find all references to the sibling values (e.g., grep fo
 - `.expects(:something).never` missing when a code path should explicitly NOT call an external service
 - Security enforcement features (blocking, rate limiting, auth) without integration tests verifying the enforcement path works end-to-end
 
+#### Completeness Gaps
+- Shortcut implementations where the complete version would cost <30 minutes CC time (e.g., partial enum handling, incomplete error paths, missing edge cases that are straightforward to add)
+- Options presented with only human-team effort estimates — should show both human and CC+gstack time
+- Test coverage gaps where adding the missing tests is a "lake" not an "ocean" (e.g., missing negative-path tests, missing edge case tests that mirror happy-path structure)
+- Features implemented at 80-90% when 100% is achievable with modest additional code
+
 #### Crypto & Entropy
 - Truncation of data instead of hashing (last N chars instead of SHA-256) — less entropy, easier collisions
 - `rand()` / `Random.rand` for security-sensitive values — use `SecureRandom` instead
@@ -113,6 +119,7 @@ CRITICAL (highest severity):      INFORMATIONAL (lower severity):
 ├─ LLM Output Trust Boundary      ├─ Dead Code & Consistency
 └─ Enum & Value Completeness      ├─ LLM Prompt Issues
                                    ├─ Test Gaps
+                                   ├─ Completeness Gaps
                                    ├─ Crypto & Entropy
                                    ├─ Time Window Safety
                                    ├─ Type Coercion at Boundaries
@@ -134,7 +141,7 @@ the agent auto-fixes a finding or asks the user.
 ```
 AUTO-FIX (agent fixes without asking):     ASK (needs human judgment):
 ├─ Dead code / unused variables            ├─ Security (auth, XSS, injection)
-├─ N+1 queries (missing .includes())      ├─ Race conditions
+├─ N+1 queries (missing eager loading)      ├─ Race conditions
 ├─ Stale comments contradicting code       ├─ Design decisions
 ├─ Magic numbers → named constants         ├─ Large fixes (>20 lines)
 ├─ Missing LLM output validation           ├─ Enum completeness

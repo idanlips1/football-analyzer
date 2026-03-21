@@ -7,6 +7,7 @@ fixture and caches it as ``match_events.json`` in the video workspace folder.
 from __future__ import annotations
 
 import json
+import time
 import urllib.request
 from typing import Any
 
@@ -77,6 +78,7 @@ def fetch_match_events(metadata: dict[str, Any]) -> dict[str, Any]:
 def _fetch_events(fixture_id: int) -> list[dict[str, Any]]:
     """GET events from the API-Football ``/fixtures/events`` endpoint."""
     url = f"{API_FOOTBALL_BASE_URL}/fixtures/events?fixture={fixture_id}"
+    log.info("Requesting events from API-Football for fixture %d…", fixture_id)
     req = urllib.request.Request(
         url,
         headers={
@@ -85,17 +87,21 @@ def _fetch_events(fixture_id: int) -> list[dict[str, Any]]:
         },
     )
 
+    t0 = time.monotonic()
     try:
         with urllib.request.urlopen(req) as resp:  # nosec B310
             body: dict[str, Any] = json.loads(resp.read().decode())
     except (urllib.error.URLError, json.JSONDecodeError) as exc:
         raise MatchEventsError(f"API request failed for fixture {fixture_id}: {exc}") from exc
+    elapsed = time.monotonic() - t0
+    log.info("API-Football events response received in %.1f s", elapsed)
 
     errors = body.get("errors")
     if errors:
         raise MatchEventsError(f"API-Football returned errors: {errors}")
 
     events: list[dict[str, Any]] = body.get("response", [])
+    log.info("API returned %d raw events", len(events))
     return events
 
 

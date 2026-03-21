@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -29,6 +30,12 @@ METADATA_FILENAME = "metadata.json"
 _MIN_FULL_MATCH_SECONDS = 45 * 60
 # UEFA Champions League (API-Football league id)
 _LEAGUE_CHAMPIONS_LEAGUE = 2
+
+_YDL_BASE_OPTS: dict[str, Any] = {
+    "quiet": True,
+    "no_warnings": True,
+    "js_runtimes": {"node": {}},
+}
 
 
 class MatchFinderError(Exception):
@@ -80,8 +87,7 @@ def search_youtube(
     """
     search_url = f"ytsearch{max_results}:{query} full match"
     ydl_opts: dict[str, Any] = {
-        "quiet": True,
-        "no_warnings": True,
+        **_YDL_BASE_OPTS,
         "extract_flat": False,
         "skip_download": True,
     }
@@ -143,7 +149,7 @@ def fetch_video_info(url: str) -> VideoInfo:
     """Return title and upload date without downloading the video."""
     try:
         with yt_dlp.YoutubeDL(
-            {"quiet": True, "no_warnings": True, "skip_download": True},
+            {**_YDL_BASE_OPTS, "skip_download": True},
         ) as ydl:
             info = ydl.extract_info(url, download=False)
         if not info:
@@ -618,7 +624,7 @@ def _validate_duration(
 def _extract_video_id(url: str) -> str:
     """Ask yt-dlp for the video ID without downloading."""
     try:
-        with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
+        with yt_dlp.YoutubeDL(_YDL_BASE_OPTS) as ydl:
             info = ydl.extract_info(url, download=False)
             video_id: str = info["id"]  # type: ignore[index]
             return video_id
@@ -631,18 +637,20 @@ def _download_video(url: str, workspace: Path) -> Path:
     log.info("Downloading: %s", url)
     output_template = str(workspace / "%(title)s.%(ext)s")
     ydl_opts: dict[str, Any] = {
+        **_YDL_BASE_OPTS,
         "outtmpl": output_template,
         "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
         "merge_output_format": "mp4",
-        "quiet": True,
-        "no_warnings": True,
     }
+    t0 = time.monotonic()
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
     except yt_dlp.utils.DownloadError as exc:
         raise MatchFinderError(f"yt-dlp download failed: {exc}") from exc
+    elapsed = time.monotonic() - t0
+    log.info("yt-dlp download finished in %.1f s", elapsed)
 
     video_path = Path(filename)
     if not video_path.exists():
@@ -651,24 +659,28 @@ def _download_video(url: str, workspace: Path) -> Path:
     if not video_path.exists():
         raise MatchFinderError(f"Download appeared to succeed but file not found at {video_path}")
 
-    log.info("Downloaded to %s", video_path)
+    size_mb = video_path.stat().st_size / (1024 * 1024)
+    log.info("Downloaded to %s (%.0f MB)", video_path, size_mb)
     return video_path
 
 
 def _resolve_team_id(name: str) -> int | None:
     """Look up a team's API-Football ID by name."""
+    log.info("Resolving team ID for '%s'…", name)
     data = _api_get(f"/teams?search={urllib.parse.quote(name)}")
     teams = data.get("response", [])
     if not teams:
         log.warning("No team found for '%s'", name)
         return None
     team_id: int = teams[0]["team"]["id"]
+    log.info("Team '%s' → id=%d", name, team_id)
     return team_id
 
 
 def _api_get(path: str) -> dict[str, Any]:
     """Make a GET request to API-Football and return the parsed JSON."""
     url = f"{API_FOOTBALL_BASE_URL}{path}"
+    log.debug("API-Football GET %s", path)
     req = urllib.request.Request(
         url,
         headers={
@@ -676,6 +688,9 @@ def _api_get(path: str) -> dict[str, Any]:
             "x-rapidapi-host": "v3.football.api-sports.io",
         },
     )
+    t0 = time.monotonic()
     with urllib.request.urlopen(req) as resp:  # nosec B310
         body: dict[str, Any] = json.loads(resp.read())
+    elapsed = time.monotonic() - t0
+    log.info("API-Football %s responded in %.1f s", path.split("?")[0], elapsed)
     return body

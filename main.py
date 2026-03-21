@@ -7,6 +7,7 @@ transcription → event alignment → clip building.
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -27,6 +28,7 @@ from pipeline.match_finder import (
     search_fixtures,
 )
 from pipeline.transcription import TranscriptionError, transcribe
+from utils.logger import setup_logging
 
 
 def _prompt(msg: str, default: str = "") -> str:
@@ -258,8 +260,22 @@ def _ask_kickoff_time(half: str) -> float | None:
         return None
 
 
+def _check_ffmpeg() -> None:
+    """Exit early with a clear message if ffmpeg/ffprobe are not on PATH."""
+    for binary in ("ffmpeg", "ffprobe"):
+        if shutil.which(binary) is None:
+            print(f"\n  Error: '{binary}' not found on PATH.")
+            print("  FFmpeg is required for downloading, cutting, and merging video.")
+            print("  Install it:  brew install ffmpeg  (macOS)")
+            print("                sudo apt install ffmpeg  (Ubuntu)")
+            print("                https://ffmpeg.org/download.html\n")
+            sys.exit(1)
+
+
 def run() -> None:  # noqa: C901
     """Main interactive loop."""
+    setup_logging()
+    _check_ffmpeg()
     print("\n  Football Highlights Generator")
     print("  " + "-" * 34)
     print("  Enter a match (e.g. 'Champions League final 2024')")

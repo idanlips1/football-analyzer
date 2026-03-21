@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -494,15 +495,24 @@ def transcribe(metadata: dict[str, Any]) -> dict[str, Any]:
     video_path = workspace / metadata["video_filename"]
     audio_path = workspace / AUDIO_FILENAME
     if not audio_path.exists():
+        log.info("Extracting audio from %s (this may take a few minutes)…", video_path.name)
+        t0 = time.monotonic()
         try:
             extract_audio(video_path, audio_path)
         except FFmpegError as exc:
             raise TranscriptionError(str(exc)) from exc
+        elapsed = time.monotonic() - t0
+        log.info("Audio extraction completed in %.1f s", elapsed)
     else:
-        log.info("Audio already extracted, skipping")
+        size_mb = audio_path.stat().st_size / (1024 * 1024)
+        log.info("Audio already extracted (%.0f MB), skipping", size_mb)
 
     # 2b. Transcribe with AssemblyAI
+    log.info("Starting AssemblyAI transcription (this is the slowest step)…")
+    t0 = time.monotonic()
     utterances = _call_assemblyai(audio_path)
+    elapsed = time.monotonic() - t0
+    log.info("AssemblyAI transcription finished in %.1f s (%.1f min)", elapsed, elapsed / 60)
 
     # 2c. Identify commentators
     commentator_labels = identify_commentators(utterances)
@@ -513,6 +523,7 @@ def transcribe(metadata: dict[str, Any]) -> dict[str, Any]:
     )
 
     # 2d. Detect kickoff timestamps
+    log.info("Scanning utterances for kickoff timestamps…")
     kickoffs = detect_kickoffs(utterances)
 
     # 2e. Build and cache result
@@ -547,8 +558,22 @@ def _call_assemblyai(audio_path: Path) -> list[dict[str, Any]]:
     config = aai.TranscriptionConfig(speaker_labels=True)
     transcriber = aai.Transcriber()
 
-    log.info("Uploading audio to AssemblyAI (%s)…", audio_path.name)
+    audio_size_mb = audio_path.stat().st_size / (1024 * 1024)
+    log.info(
+        "Uploading audio to AssemblyAI (%s, %.0f MB) — "
+        "upload + transcription + diarization may take 5–15 min…",
+        audio_path.name,
+        audio_size_mb,
+    )
+    t0 = time.monotonic()
     transcript = transcriber.transcribe(str(audio_path), config=config)
+    elapsed = time.monotonic() - t0
+    log.info(
+        "AssemblyAI returned status=%s in %.1f s (%.1f min)",
+        transcript.status,
+        elapsed,
+        elapsed / 60,
+    )
 
     if transcript.status == aai.TranscriptStatus.error:
         raise TranscriptionError(f"AssemblyAI transcription failed: {transcript.error}")
