@@ -8,9 +8,9 @@ from models.events import EventType
 
 # (pre_roll_seconds, post_roll_seconds)
 CLIP_WINDOWS: dict[EventType, tuple[float, float]] = {
-    EventType.GOAL: (15.0, 30.0),
+    EventType.GOAL: (25.0, 20.0),
     EventType.OWN_GOAL: (10.0, 25.0),
-    EventType.PENALTY: (10.0, 25.0),
+    EventType.PENALTY: (30.0, 25.0),
     EventType.RED_CARD: (10.0, 15.0),
     EventType.YELLOW_CARD: (5.0, 10.0),
     EventType.NEAR_MISS: (10.0, 15.0),

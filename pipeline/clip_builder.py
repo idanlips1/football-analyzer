@@ -51,7 +51,8 @@ def calculate_clip_windows(
     for event_dict in events:
         ae = AlignedEvent.from_dict(event_dict)
         pre_roll, post_roll = get_window(ae.event_type)
-        clip_start = max(0.0, ae.refined_video_ts - pre_roll)
+        earliest_ts = min(ae.estimated_video_ts, ae.refined_video_ts)
+        clip_start = max(0.0, earliest_ts - pre_roll)
         clip_end = min(video_duration, ae.refined_video_ts + post_roll)
 
         clips.append(

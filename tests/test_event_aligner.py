@@ -197,6 +197,45 @@ class TestRefineTimestamp:
         assert refined_ts == 1565.0
         assert confidence == 0.7
 
+    def test_prefer_before_picks_latest_preceding_utterance(self) -> None:
+        utterances = [
+            {"speaker": "A", "text": "build-up", "start": 1_570_000, "end": 1_575_000},
+            {"speaker": "A", "text": "shot!", "start": 1_582_000, "end": 1_587_000},
+            {"speaker": "A", "text": "GOAL!", "start": 1_595_000, "end": 1_600_000},
+        ]
+        refined_ts, confidence = refine_timestamp(
+            1590.0,
+            utterances,
+            prefer_before=True,
+        )
+        assert refined_ts == 1582.0
+        assert confidence == 0.9
+
+    def test_prefer_before_falls_back_to_closest_when_none_before(self) -> None:
+        utterances = [
+            {"speaker": "A", "text": "GOAL!", "start": 1_595_000, "end": 1_600_000},
+        ]
+        refined_ts, confidence = refine_timestamp(
+            1590.0,
+            utterances,
+            prefer_before=True,
+        )
+        assert refined_ts == 1595.0
+        assert confidence == 0.9
+
+    def test_prefer_before_false_still_picks_closest(self) -> None:
+        utterances = [
+            {"speaker": "A", "text": "build-up", "start": 1_570_000, "end": 1_575_000},
+            {"speaker": "A", "text": "GOAL!", "start": 1_595_000, "end": 1_600_000},
+        ]
+        refined_ts, confidence = refine_timestamp(
+            1590.0,
+            utterances,
+            prefer_before=False,
+        )
+        assert refined_ts == 1595.0
+        assert confidence == 0.9
+
     def test_energy_fn_prefers_highest_energy(self) -> None:
         utterances = [
             {"speaker": "A", "text": "soft", "start": 1_588_000, "end": 1_590_000},
