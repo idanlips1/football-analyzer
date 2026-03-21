@@ -3,19 +3,16 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
-
-import pytest
 
 from models.events import AlignedEvent, EventType, MatchEvent
 from pipeline.event_aligner import (
     ALIGNMENT_FILENAME,
-    EventAlignerError,
     align_events,
     estimate_video_timestamp,
     refine_timestamp,
 )
+from utils.storage import LocalStorage
 
 # ── estimate_video_timestamp ───────────────────────────────────────────────
 
@@ -277,22 +274,28 @@ def _make_transcription_with_utterances(
 class TestAlignEvents:
     def test_full_flow_produces_aligned_events(
         self,
-        tmp_workspace: Path,
+        tmp_storage: LocalStorage,
         sample_match_events: list[MatchEvent],
     ) -> None:
-        metadata = {"video_id": "test_vid"}
-        ws = tmp_workspace / "test_vid"
-        ws.mkdir(parents=True, exist_ok=True)
+        video_id = "test_vid"
+        metadata = {"video_id": video_id}
+        transcription = _make_transcription_with_utterances()
+        tmp_storage.write_json(video_id, "transcription.json", transcription)
 
         match_events_data: dict[str, Any] = {
-            "video_id": "test_vid",
+            "video_id": video_id,
             "events": [ev.to_dict() for ev in sample_match_events],
         }
-        transcription = _make_transcription_with_utterances()
 
-        result = align_events(match_events_data, transcription, metadata)
+        result = align_events(
+            match_events_data,
+            metadata,
+            tmp_storage,
+            kickoff_first=330.0,
+            kickoff_second=3420.0,
+        )
 
-        assert result["video_id"] == "test_vid"
+        assert result["video_id"] == video_id
         assert result["event_count"] > 0
         assert len(result["events"]) == result["event_count"]
 
@@ -304,11 +307,12 @@ class TestAlignEvents:
 
     def test_substitutions_filtered_out(
         self,
-        tmp_workspace: Path,
+        tmp_storage: LocalStorage,
     ) -> None:
-        metadata = {"video_id": "test_vid"}
-        ws = tmp_workspace / "test_vid"
-        ws.mkdir(parents=True, exist_ok=True)
+        video_id = "test_vid"
+        metadata = {"video_id": video_id}
+        transcription = _make_transcription_with_utterances()
+        tmp_storage.write_json(video_id, "transcription.json", transcription)
 
         events = [
             MatchEvent(
@@ -335,11 +339,12 @@ class TestAlignEvents:
             ).to_dict(),
         ]
 
-        transcription = _make_transcription_with_utterances()
         result = align_events(
-            {"video_id": "test_vid", "events": events},
-            transcription,
+            {"video_id": video_id, "events": events},
             metadata,
+            tmp_storage,
+            kickoff_first=330.0,
+            kickoff_second=3420.0,
         )
 
         assert result["event_count"] == 1
@@ -347,83 +352,120 @@ class TestAlignEvents:
 
     def test_caching_returns_cached_file(
         self,
-        tmp_workspace: Path,
+        tmp_storage: LocalStorage,
         sample_match_events: list[MatchEvent],
     ) -> None:
-        metadata = {"video_id": "test_vid"}
-        ws = tmp_workspace / "test_vid"
-        ws.mkdir(parents=True, exist_ok=True)
+        video_id = "test_vid"
+        metadata = {"video_id": video_id}
+        transcription = _make_transcription_with_utterances()
+        tmp_storage.write_json(video_id, "transcription.json", transcription)
 
         match_events_data: dict[str, Any] = {
-            "video_id": "test_vid",
+            "video_id": video_id,
             "events": [ev.to_dict() for ev in sample_match_events],
         }
-        transcription = _make_transcription_with_utterances()
 
-        first = align_events(match_events_data, transcription, metadata)
-        second = align_events(match_events_data, transcription, metadata)
+        first = align_events(
+            match_events_data,
+            metadata,
+            tmp_storage,
+            kickoff_first=330.0,
+            kickoff_second=3420.0,
+        )
+        second = align_events(
+            match_events_data,
+            metadata,
+            tmp_storage,
+            kickoff_first=330.0,
+            kickoff_second=3420.0,
+        )
         assert first == second
 
-        cache_path = ws / ALIGNMENT_FILENAME
+        cache_path = tmp_storage.local_path(video_id, ALIGNMENT_FILENAME)
         assert cache_path.exists()
 
-    def test_missing_kickoff_raises(
+    def test_explicit_kickoffs_used_for_timestamp_estimation(
         self,
-        tmp_workspace: Path,
+        tmp_storage: LocalStorage,
     ) -> None:
-        metadata = {"video_id": "test_vid"}
-        ws = tmp_workspace / "test_vid"
-        ws.mkdir(parents=True, exist_ok=True)
-
+        """Verify that the explicitly passed kickoff values drive timestamp calculation."""
+        video_id = "test_vid"
+        metadata = {"video_id": video_id}
+        # Transcription has NO kickoff fields — kickoffs come from caller args
         transcription: dict[str, Any] = {
             "utterances": [],
-            "kickoff_first_half": None,
-            "kickoff_second_half": None,
         }
+        tmp_storage.write_json(video_id, "transcription.json", transcription)
 
-        with pytest.raises(EventAlignerError, match="kickoff"):
-            align_events(
-                {"video_id": "test_vid", "events": []},
-                transcription,
-                metadata,
-            )
+        events = [
+            MatchEvent(
+                minute=21,
+                extra_minute=None,
+                half="1st Half",
+                event_type=EventType.GOAL,
+                team="Liverpool",
+                player="Trent Alexander-Arnold",
+                assist=None,
+                score="1 - 0",
+                detail="Normal Goal",
+            ).to_dict(),
+        ]
+
+        result = align_events(
+            {"video_id": video_id, "events": events},
+            metadata,
+            tmp_storage,
+            kickoff_first=330.0,
+            kickoff_second=3420.0,
+        )
+
+        assert result["event_count"] == 1
+        # With kickoff_first=330 and minute=21: 330 + 21*60 = 1590
+        assert result["events"][0]["estimated_video_ts"] == 1590.0
 
     def test_empty_events_produces_empty_result(
         self,
-        tmp_workspace: Path,
+        tmp_storage: LocalStorage,
     ) -> None:
-        metadata = {"video_id": "test_vid"}
-        ws = tmp_workspace / "test_vid"
-        ws.mkdir(parents=True, exist_ok=True)
-
+        video_id = "test_vid"
+        metadata = {"video_id": video_id}
         transcription = _make_transcription_with_utterances()
+        tmp_storage.write_json(video_id, "transcription.json", transcription)
 
         result = align_events(
-            {"video_id": "test_vid", "events": []},
-            transcription,
+            {"video_id": video_id, "events": []},
             metadata,
+            tmp_storage,
+            kickoff_first=330.0,
+            kickoff_second=3420.0,
         )
         assert result["event_count"] == 0
         assert result["events"] == []
 
     def test_output_file_is_valid_json(
         self,
-        tmp_workspace: Path,
+        tmp_storage: LocalStorage,
         sample_match_events: list[MatchEvent],
     ) -> None:
-        metadata = {"video_id": "test_vid"}
-        ws = tmp_workspace / "test_vid"
-        ws.mkdir(parents=True, exist_ok=True)
+        video_id = "test_vid"
+        metadata = {"video_id": video_id}
+        transcription = _make_transcription_with_utterances()
+        tmp_storage.write_json(video_id, "transcription.json", transcription)
 
         match_events_data: dict[str, Any] = {
-            "video_id": "test_vid",
+            "video_id": video_id,
             "events": [ev.to_dict() for ev in sample_match_events],
         }
-        transcription = _make_transcription_with_utterances()
 
-        align_events(match_events_data, transcription, metadata)
+        align_events(
+            match_events_data,
+            metadata,
+            tmp_storage,
+            kickoff_first=330.0,
+            kickoff_second=3420.0,
+        )
 
-        cache_path = ws / ALIGNMENT_FILENAME
+        cache_path = tmp_storage.local_path(video_id, ALIGNMENT_FILENAME)
         loaded = json.loads(cache_path.read_text())
-        assert loaded["video_id"] == "test_vid"
+        assert loaded["video_id"] == video_id
         assert isinstance(loaded["events"], list)
