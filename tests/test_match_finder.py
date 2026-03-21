@@ -11,10 +11,13 @@ import pytest
 
 from pipeline.match_finder import (
     MatchFinderError,
+    VideoInfo,
+    _score_matches,
     download_and_save,
     find_match,
     is_url,
     parse_teams_from_video_title,
+    parse_video_title,
     resolve_fixture_for_video,
     search_fixtures,
     search_youtube,
@@ -503,3 +506,164 @@ class TestResolveFixtureForVideo:
         assert res.teams_parsed is True
         assert res.fixture_id is None
         assert res.candidates == []
+
+    @patch("pipeline.match_finder.fetch_headtohead_fixtures")
+    def test_score_disambiguates_multiple_matches(self, mock_h2h: MagicMock) -> None:
+        """The 2022 CL final bug: two H2H results, score in title picks the right one."""
+        mock_h2h.return_value = [
+            {
+                "fixture_id": 100,
+                "home_team": "Liverpool",
+                "away_team": "Real Madrid",
+                "date": "2024-11-27T20:00:00+00:00",
+                "league": "UEFA Champions League",
+                "league_id": 2,
+                "score": {"home": 2, "away": 0},
+            },
+            {
+                "fixture_id": 200,
+                "home_team": "Liverpool",
+                "away_team": "Real Madrid",
+                "date": "2022-05-28T20:00:00+00:00",
+                "league": "UEFA Champions League",
+                "league_id": 2,
+                "score": {"home": 0, "away": 1},
+            },
+        ]
+        res = resolve_fixture_for_video(
+            "",
+            "Liverpool v Real Madrid (0-1) | Champions League Final | Full Match Replay",
+            upload_year=2022,
+        )
+        assert res.fixture_id == 200
+        assert res.fixture_row is not None
+        assert res.fixture_row["date"].startswith("2022")
+
+    @patch("pipeline.match_finder.fetch_headtohead_fixtures")
+    def test_upload_year_used_when_no_year_in_text(self, mock_h2h: MagicMock) -> None:
+        """Upload year narrows candidates when title has no explicit year."""
+        mock_h2h.return_value = [
+            {
+                "fixture_id": 10,
+                "home_team": "A",
+                "away_team": "B",
+                "date": "2023-03-15T20:00:00+00:00",
+                "league": "League",
+                "league_id": 1,
+                "score": {"home": 1, "away": 0},
+            },
+            {
+                "fixture_id": 20,
+                "home_team": "A",
+                "away_team": "B",
+                "date": "2021-06-01T20:00:00+00:00",
+                "league": "League",
+                "league_id": 1,
+                "score": {"home": 1, "away": 0},
+            },
+        ]
+        res = resolve_fixture_for_video(
+            "",
+            "A 1-0 B | Some Cup",
+            upload_year=2023,
+        )
+        assert res.fixture_id == 10
+
+    @patch("pipeline.match_finder.fetch_headtohead_fixtures")
+    def test_fixture_row_populated_on_auto_match(self, mock_h2h: MagicMock) -> None:
+        mock_h2h.return_value = [
+            {
+                "fixture_id": 999,
+                "home_team": "X",
+                "away_team": "Y",
+                "date": "2024-01-01T20:00:00+00:00",
+                "league": "Cup",
+                "league_id": 1,
+                "score": {"home": 2, "away": 1},
+            },
+        ]
+        res = resolve_fixture_for_video("2024", "X 2-1 Y | Cup")
+        assert res.fixture_id == 999
+        assert res.fixture_row is not None
+        assert res.fixture_row["fixture_id"] == 999
+
+
+# ── parse_video_title (rich parsing) ──────────────────────────────────────
+
+
+class TestParseVideoTitle:
+    def test_score_in_middle(self) -> None:
+        r = parse_video_title("Liverpool 3-1 Manchester City | FA Community Shield")
+        assert r is not None
+        assert r.teams == ("Liverpool", "Manchester City")
+        assert r.score_home == 3
+        assert r.score_away == 1
+
+    def test_parenthesised_score_with_vs(self) -> None:
+        r = parse_video_title(
+            "Liverpool v Real Madrid (0-1) | Champions League Final | Full Match Replay"
+        )
+        assert r is not None
+        assert r.teams == ("Liverpool", "Real Madrid")
+        assert r.score_home == 0
+        assert r.score_away == 1
+
+    def test_full_match_prefix_stripped(self) -> None:
+        r = parse_video_title(
+            "FULL MATCH | Liverpool 3-1 Manchester City | FA Community Shield 2022-23"
+        )
+        assert r is not None
+        assert r.teams == ("Liverpool", "Manchester City")
+        assert r.score_home == 3
+        assert r.score_away == 1
+
+    def test_no_score(self) -> None:
+        r = parse_video_title("Team A vs Team B | Some League")
+        assert r is not None
+        assert r.teams == ("Team A", "Team B")
+        assert r.has_score is False
+
+    def test_unparseable(self) -> None:
+        assert parse_video_title("random video about football") is None
+
+
+# ── _score_matches ─────────────────────────────────────────────────────────
+
+
+class TestScoreMatches:
+    def test_exact_match(self) -> None:
+        row = {"score": {"home": 3, "away": 1}}
+        assert _score_matches(row, 3, 1) is True
+
+    def test_reversed_teams(self) -> None:
+        row = {"score": {"home": 1, "away": 3}}
+        assert _score_matches(row, 3, 1) is True
+
+    def test_no_match(self) -> None:
+        row = {"score": {"home": 2, "away": 0}}
+        assert _score_matches(row, 3, 1) is False
+
+    def test_missing_score(self) -> None:
+        row = {"score": None}
+        assert _score_matches(row, 3, 1) is False
+
+    def test_partial_score(self) -> None:
+        row = {"score": {"home": 3, "away": None}}
+        assert _score_matches(row, 3, 1) is False
+
+
+# ── VideoInfo ──────────────────────────────────────────────────────────────
+
+
+class TestVideoInfo:
+    def test_upload_year_from_date(self) -> None:
+        v = VideoInfo(title="test", upload_date="20220529")
+        assert v.upload_year == 2022
+
+    def test_upload_year_empty(self) -> None:
+        v = VideoInfo()
+        assert v.upload_year is None
+
+    def test_upload_year_short_string(self) -> None:
+        v = VideoInfo(upload_date="202")
+        assert v.upload_year is None

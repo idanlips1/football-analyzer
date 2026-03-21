@@ -6,8 +6,10 @@ transcription → event alignment → clip building.
 
 from __future__ import annotations
 
+import json
 import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from pipeline.clip_builder import ClipBuilderError, build_highlights
@@ -16,9 +18,11 @@ from pipeline.match_events import MatchEventsError, fetch_match_events
 from pipeline.match_finder import (
     MatchFinderError,
     download_and_save,
-    fetch_video_title,
+    extract_video_id_from_url,
+    fetch_video_info,
     find_match,
     is_url,
+    load_existing_metadata,
     resolve_fixture_for_video,
     search_fixtures,
 )
@@ -168,22 +172,58 @@ def _pick_fixture_from_team_search() -> int | None:
     return _pick_fixture_from_list(fixtures)
 
 
-def _resolve_fixture_auto(user_query: str, video_title: str) -> int | None:
+def _format_fixture_summary(row: dict[str, Any]) -> str:
+    """One-line summary of a fixture row for confirmation prompts."""
+    goals = row.get("score")
+    score_str = ""
+    if isinstance(goals, dict):
+        gh, ga = goals.get("home"), goals.get("away")
+        if gh is not None and ga is not None:
+            score_str = f" {gh}-{ga}"
+    date_str = str(row.get("date", ""))[:10]
+    league = row.get("league", "")
+    return f"{row['home_team']}{score_str} {row['away_team']} | {league} | {date_str}"
+
+
+def _resolve_fixture_auto(
+    user_query: str,
+    video_title: str,
+    *,
+    upload_year: int | None = None,
+) -> int | None:
     """Resolve fixture from title + query via API; fall back to manual prompts."""
     print("\n  Resolving fixture via API-Football…")
-    res = resolve_fixture_for_video(user_query, video_title)
+    res = resolve_fixture_for_video(
+        user_query,
+        video_title,
+        upload_year=upload_year,
+    )
 
     if res.teams_parsed:
         print(f"  Detected teams: {res.team_a} vs {res.team_b}")
 
     if res.fixture_id is not None:
-        print(f"  Auto-matched fixture id={res.fixture_id}")
+        # Show what we matched and ask for confirmation
+        if res.fixture_row:
+            summary = _format_fixture_summary(res.fixture_row)
+            print(f"  Auto-matched: {summary}  (id={res.fixture_id})")
+            confirm = _prompt("  Is this correct? [Y/n] ", "y")
+            if confirm.lower() in ("n", "no"):
+                print("  Rejected — trying manual linking.")
+                return _link_fixture_interactive()
+        else:
+            print(f"  Auto-matched fixture id={res.fixture_id}")
         return res.fixture_id
 
     if len(res.candidates) == 1:
         only = res.candidates[0]
         only_id = int(only["fixture_id"])
-        print(f"  Single match found: id={only_id}")
+        summary = _format_fixture_summary(only)
+        print(f"  Single match found: {summary}  (id={only_id})")
+        confirm = _prompt("  Is this correct? [Y/n] ", "y")
+        if confirm.lower() in ("n", "no"):
+            print("  Rejected — trying manual linking.")
+            return _link_fixture_interactive()
         return only_id
 
     if len(res.candidates) > 1:
@@ -247,31 +287,69 @@ def run() -> None:  # noqa: C901
             print(f"\n  Error: {exc}\n", file=sys.stderr)
 
 
-def _handle_query(user_input: str) -> None:
+def _step1_get_video(user_input: str) -> dict[str, Any] | None:
+    """Resolve or download the match video (Step 1).
+
+    Returns metadata dict, or ``None`` if the user cancelled.
+    When the video is already downloaded, skips all network calls and returns
+    the cached metadata immediately.
+    """
+    # Fast path: if the URL points to an already-downloaded video, skip
+    # all network calls (yt-dlp info, fixture resolution, download).
+    if is_url(user_input):
+        vid_id = extract_video_id_from_url(user_input)
+        cached = load_existing_metadata(vid_id) if vid_id else None
+        if cached is not None:
+            print("\n[1/5] Video already downloaded — skipping.")
+            if not cached.get("fixture_id"):
+                fixture_id = _resolve_fixture_auto(
+                    "",
+                    cached.get("video_filename", ""),
+                )
+                if fixture_id:
+                    cached["fixture_id"] = fixture_id
+                    meta_path = Path(cached["workspace"]) / "metadata.json"
+                    meta_path.write_text(json.dumps(cached, indent=2))
+            return cached
+
+        vinfo = fetch_video_info(user_input)
+        fixture_id = _resolve_fixture_auto(
+            "",
+            vinfo.title,
+            upload_year=vinfo.upload_year,
+        )
+        print("\n[1/5] Downloading video...")
+        return download_and_save(
+            user_input,
+            fixture_id=fixture_id,
+            skip_duration_check=False,
+        )
+
+    # Text query path: search YouTube, pick a result, download.
+    result = find_match(user_input)
+    candidates = result.get("candidates", [])
+    chosen = _pick_youtube_result(candidates)
+    if not chosen:
+        url_fallback = _prompt("\n  Enter a YouTube URL manually (or Enter to cancel): ")
+        if not url_fallback:
+            return None
+        chosen = {"url": url_fallback, "video_id": "", "title": url_fallback}
+
+    fixture_id = _resolve_fixture_auto(user_input, chosen.get("title") or "")
+    print("\n[1/5] Downloading video...")
+    return download_and_save(
+        chosen["url"],
+        fixture_id=fixture_id,
+        skip_duration_check=False,
+    )
+
+
+def _handle_query(user_input: str) -> None:  # noqa: C901
     """Process a single user query end-to-end."""
     # ------- Step 1: Find / download the match video ---------
-    fixture_id: int | None = None
-
-    if is_url(user_input):
-        title = fetch_video_title(user_input)
-        fixture_id = _resolve_fixture_auto("", title or "")
-        print("\n[1/5] Downloading video...")
-        metadata = download_and_save(user_input, fixture_id=fixture_id, skip_duration_check=False)
-    else:
-        result = find_match(user_input)
-        candidates = result.get("candidates", [])
-        chosen = _pick_youtube_result(candidates)
-        if not chosen:
-            url_fallback = _prompt("\n  Enter a YouTube URL manually (or Enter to cancel): ")
-            if not url_fallback:
-                return
-            chosen = {"url": url_fallback, "video_id": "", "title": url_fallback}
-
-        fixture_id = _resolve_fixture_auto(user_input, chosen.get("title") or "")
-        print("\n[1/5] Downloading video...")
-        metadata = download_and_save(
-            chosen["url"], fixture_id=fixture_id, skip_duration_check=False
-        )
+    metadata = _step1_get_video(user_input)
+    if metadata is None:
+        return
 
     dur_min = metadata["duration_seconds"] / 60
     print(f"       Video ID: {metadata['video_id']} ({dur_min:.0f} min)")
