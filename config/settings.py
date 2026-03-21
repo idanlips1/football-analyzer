@@ -60,6 +60,15 @@ MAX_CLIP_DURATION_SECONDS: float = 45.0
 # Merge gap — consecutive excited utterances within this window are joined
 MERGE_GAP_SECONDS: float = 5.0
 
+# Fade-to-black transition duration (seconds). Set to 0.0 to disable fades.
+FADE_DURATION_SECONDS: float = 0.5
+
+# Encoding quality for re-encoded clips (lower = better quality, 18 ≈ visually lossless)
+CLIP_CRF: int = 18
+
+# Audio bitrate for re-encoded clips
+CLIP_AUDIO_BITRATE: str = "192k"
+
 # API-Football (api-sports.io) — header-based auth with x-rapidapi-key
 API_FOOTBALL_KEY: str = os.environ.get("API_FOOTBALL_KEY", "")
 API_FOOTBALL_BASE_URL: str = "https://v3.football.api-sports.io"

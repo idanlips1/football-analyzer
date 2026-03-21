@@ -97,7 +97,7 @@ def _make_aligned_events_data(
 
 
 class TestCalculateClipWindows:
-    def test_goal_at_1000s_gets_25s_pre_and_30s_post(self) -> None:
+    def test_goal_at_1000s_gets_25s_pre_and_20s_post(self) -> None:
         from pipeline.clip_builder import calculate_clip_windows
 
         events = [_aligned_event(refined_video_ts=1000.0)]
@@ -105,7 +105,7 @@ class TestCalculateClipWindows:
 
         assert len(result) == 1
         assert result[0]["clip_start"] == pytest.approx(975.0)
-        assert result[0]["clip_end"] == pytest.approx(1030.0)
+        assert result[0]["clip_end"] == pytest.approx(1020.0)
 
     def test_event_near_start_clamped_to_zero(self) -> None:
         from pipeline.clip_builder import calculate_clip_windows
@@ -214,8 +214,8 @@ class TestCalculateClipWindows:
         result = calculate_clip_windows(events, video_duration=5400.0)
         # pre_roll anchored from min(1000, 1010) = 1000 → clip_start = 975
         assert result[0]["clip_start"] == pytest.approx(975.0)
-        # post_roll still from refined
-        assert result[0]["clip_end"] == pytest.approx(1040.0)
+        # post_roll still from refined (20s for goal)
+        assert result[0]["clip_end"] == pytest.approx(1030.0)
 
     def test_clip_has_priority_field(self) -> None:
         from pipeline.clip_builder import calculate_clip_windows
@@ -350,6 +350,7 @@ class TestBuildHighlights:
         _start: float,
         _end: float,
         output_path: Path,
+        **_kwargs: Any,
     ) -> Path:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(b"clip")
