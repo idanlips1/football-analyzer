@@ -20,6 +20,7 @@ from typing import Any
 from config.clip_windows import get_priority, get_window
 from config.settings import (
     DEFAULT_HIGHLIGHTS_DURATION_SECONDS,
+    FADE_DURATION_SECONDS,
     MERGE_GAP_SECONDS,
 )
 from models.events import AlignedEvent, seconds_to_timestamp
@@ -219,7 +220,13 @@ def build_highlights(
             clip_dict["clip_end"],
         )
         try:
-            cut_clip(video_path, clip_dict["clip_start"], clip_dict["clip_end"], clip_path)
+            cut_clip(
+                video_path,
+                clip_dict["clip_start"],
+                clip_dict["clip_end"],
+                clip_path,
+                fade_duration=FADE_DURATION_SECONDS,
+            )
         except FFmpegError as exc:
             raise ClipBuilderError(f"Failed to cut clip {i}: {exc}") from exc
         clip_paths.append(clip_path)

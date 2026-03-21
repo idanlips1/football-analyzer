@@ -232,7 +232,7 @@ class TestCalculateClipWindows:
         result = calculate_clip_windows(events, video_duration=5400.0)
         # pre_roll anchored from min(1000, 1010) = 1000 → clip_start = 975
         assert result[0]["clip_start"] == pytest.approx(975.0)
-        # post_roll still from refined
+        # post_roll still from refined (20s for goal)
         assert result[0]["clip_end"] == pytest.approx(1030.0)
 
     def test_clip_has_priority_field(self) -> None:

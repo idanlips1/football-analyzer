@@ -54,6 +54,9 @@ EXCITEMENT_BATCH_SIZE: int = 20
 # Target highlights length (10 minutes)
 DEFAULT_HIGHLIGHTS_DURATION_SECONDS: float = 600.0
 
+# Fade duration applied to each clip (seconds); 0.0 disables fade (stream-copy mode)
+FADE_DURATION_SECONDS: float = 0.5
+
 # Merged clip duration cap — clips longer than this are split during merging
 MAX_CLIP_DURATION_SECONDS: float = 45.0
 
