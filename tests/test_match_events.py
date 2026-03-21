@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -16,6 +15,7 @@ from pipeline.match_events import (
     _parse_events,
     fetch_match_events,
 )
+from utils.storage import LocalStorage
 
 # ── Realistic API response fixtures ────────────────────────────────────────
 
@@ -189,94 +189,95 @@ class TestParseEvents:
 
 
 def _build_metadata(
-    tmp_workspace: Path,
     video_id: str = "test_vid",
     fixture_id: int = 12345,
 ) -> dict[str, Any]:
-    ws = tmp_workspace / video_id
-    ws.mkdir(parents=True, exist_ok=True)
     return {"video_id": video_id, "fixture_id": fixture_id}
 
 
 class TestFetchMatchEvents:
+    @patch("pipeline.match_events.API_FOOTBALL_KEY", "test_key")
     @patch("pipeline.match_events._fetch_events", return_value=SAMPLE_RAW_EVENTS)
     def test_returns_correct_structure(
         self,
         _mock_fetch: MagicMock,
-        tmp_workspace: Path,
+        tmp_storage: LocalStorage,
     ) -> None:
-        metadata = _build_metadata(tmp_workspace)
-        result = fetch_match_events(metadata)
+        metadata = _build_metadata()
+        result = fetch_match_events(metadata, tmp_storage)
 
         assert result["video_id"] == "test_vid"
         assert result["fixture_id"] == 12345
         assert result["event_count"] == len(SAMPLE_RAW_EVENTS)
         assert len(result["events"]) == len(SAMPLE_RAW_EVENTS)
 
+    @patch("pipeline.match_events.API_FOOTBALL_KEY", "test_key")
     @patch("pipeline.match_events._fetch_events", return_value=SAMPLE_RAW_EVENTS)
     def test_events_are_dicts(
         self,
         _mock_fetch: MagicMock,
-        tmp_workspace: Path,
+        tmp_storage: LocalStorage,
     ) -> None:
-        metadata = _build_metadata(tmp_workspace)
-        result = fetch_match_events(metadata)
+        metadata = _build_metadata()
+        result = fetch_match_events(metadata, tmp_storage)
         for ev in result["events"]:
             assert isinstance(ev, dict)
             assert "minute" in ev
             assert "event_type" in ev
 
+    @patch("pipeline.match_events.API_FOOTBALL_KEY", "test_key")
     @patch("pipeline.match_events._fetch_events", return_value=SAMPLE_RAW_EVENTS)
     def test_caching_writes_file(
         self,
         _mock_fetch: MagicMock,
-        tmp_workspace: Path,
+        tmp_storage: LocalStorage,
     ) -> None:
-        metadata = _build_metadata(tmp_workspace)
-        fetch_match_events(metadata)
-        cache_path = tmp_workspace / "test_vid" / "match_events.json"
+        metadata = _build_metadata()
+        fetch_match_events(metadata, tmp_storage)
+        cache_path = tmp_storage.local_path("test_vid", "match_events.json")
         assert cache_path.exists()
         cached = json.loads(cache_path.read_text())
         assert cached["event_count"] == len(SAMPLE_RAW_EVENTS)
 
+    @patch("pipeline.match_events.API_FOOTBALL_KEY", "test_key")
     @patch("pipeline.match_events._fetch_events", return_value=SAMPLE_RAW_EVENTS)
     def test_cache_hit_skips_api_call(
         self,
         mock_fetch: MagicMock,
-        tmp_workspace: Path,
+        tmp_storage: LocalStorage,
     ) -> None:
-        metadata = _build_metadata(tmp_workspace)
-        first = fetch_match_events(metadata)
-        second = fetch_match_events(metadata)
+        metadata = _build_metadata()
+        first = fetch_match_events(metadata, tmp_storage)
+        second = fetch_match_events(metadata, tmp_storage)
         assert first == second
         assert mock_fetch.call_count == 1
 
+    @patch("pipeline.match_events.API_FOOTBALL_KEY", "test_key")
     @patch("pipeline.match_events._fetch_events", return_value=[])
     def test_empty_events(
         self,
         _mock_fetch: MagicMock,
-        tmp_workspace: Path,
+        tmp_storage: LocalStorage,
     ) -> None:
-        metadata = _build_metadata(tmp_workspace)
-        result = fetch_match_events(metadata)
+        metadata = _build_metadata()
+        result = fetch_match_events(metadata, tmp_storage)
         assert result["event_count"] == 0
         assert result["events"] == []
 
     def test_missing_api_key_raises(
         self,
-        tmp_workspace: Path,
+        tmp_storage: LocalStorage,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setattr("pipeline.match_events.API_FOOTBALL_KEY", "")
-        metadata = _build_metadata(tmp_workspace)
+        metadata = _build_metadata()
         with pytest.raises(MatchEventsError, match="API_FOOTBALL_KEY"):
-            fetch_match_events(metadata)
+            fetch_match_events(metadata, tmp_storage)
 
     def test_missing_fixture_id_raises(
         self,
-        tmp_workspace: Path,
+        tmp_storage: LocalStorage,
     ) -> None:
         metadata: dict[str, Any] = {"video_id": "test_vid"}
-        (tmp_workspace / "test_vid").mkdir(parents=True, exist_ok=True)
         with pytest.raises(MatchEventsError, match="fixture_id"):
-            fetch_match_events(metadata)
+            fetch_match_events(metadata, tmp_storage)

@@ -27,7 +27,6 @@ def tmp_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr("pipeline.edr.PIPELINE_WORKSPACE", workspace)
     monkeypatch.setattr("pipeline.filtering.PIPELINE_WORKSPACE", workspace)
     monkeypatch.setattr("pipeline.video.PIPELINE_WORKSPACE", workspace)
-    monkeypatch.setattr("pipeline.match_events.PIPELINE_WORKSPACE", workspace)
     monkeypatch.setattr("pipeline.match_finder.PIPELINE_WORKSPACE", workspace)
     monkeypatch.setattr("pipeline.event_aligner.PIPELINE_WORKSPACE", workspace)
     monkeypatch.setattr("pipeline.clip_builder.PIPELINE_WORKSPACE", workspace)
