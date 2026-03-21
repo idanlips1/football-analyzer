@@ -72,27 +72,6 @@ Text query or URL → match_finder → match_events → transcription (+ kickoff
 - `tests/conftest.py`: `tmp_workspace` monkeypatches `PIPELINE_WORKSPACE` per module; `fake_ffprobe_duration` mocks FFmpeg
 - New pipeline modules are covered with unit tests; mock external I/O (yt-dlp, HTTP, AssemblyAI)
 
-## gstack
-
-Use the `/browse` skill from gstack for all web browsing. Never use `mcp__claude-in-chrome__*` tools.
-
-Available skills:
-
-- `/plan-ceo-review` — CEO-level plan review
-- `/plan-eng-review` — Engineering plan review
-- `/plan-design-review` — Design review
-- `/review` — Code review
-- `/ship` — Ship a change
-- `/browse` — Web browsing (use this for ALL web browsing)
-- `/qa` — QA testing
-- `/qa-only` — QA testing only
-- `/qa-design-review` — QA + design review
-- `/setup-browser-cookies` — Set up browser cookies
-- `/retro` — Retrospective
-- `/document-release` — Document a release
-
-If gstack skills aren't working, run `cd .claude/skills/gstack && ./setup` to build the binary and register skills.
-
 ## Code Conventions
 
 - Python 3.12, type hints required everywhere (`mypy` enforces `disallow_untyped_defs = true`)

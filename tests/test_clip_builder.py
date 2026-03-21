@@ -115,7 +115,7 @@ def _make_aligned_events() -> list[AlignedEvent]:
 
 
 class TestCalculateClipWindows:
-    def test_goal_at_1000s_gets_correct_window(self) -> None:
+    def test_goal_at_1000s_gets_25s_pre_and_20s_post(self) -> None:
         from pipeline.clip_builder import calculate_clip_windows
 
         events = [_aligned_event(refined_video_ts=1000.0)]
@@ -394,6 +394,18 @@ class TestQuerySlug:
 
 
 class TestBuildHighlights:
+    def _mock_cut(
+        self,
+        _video_path: Path,
+        _start: float,
+        _end: float,
+        output_path: Path,
+        **_kwargs: Any,
+    ) -> Path:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"clip")
+        return output_path
+
     def test_build_creates_highlights(
         self, tmp_storage: LocalStorage, monkeypatch: pytest.MonkeyPatch
     ) -> None:

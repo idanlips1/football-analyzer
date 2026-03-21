@@ -54,14 +54,20 @@ EXCITEMENT_BATCH_SIZE: int = 20
 # Target highlights length (10 minutes)
 DEFAULT_HIGHLIGHTS_DURATION_SECONDS: float = 600.0
 
-# Fade duration applied to each clip (seconds); 0.0 disables fade (stream-copy mode)
-FADE_DURATION_SECONDS: float = 0.5
-
 # Merged clip duration cap — clips longer than this are split during merging
 MAX_CLIP_DURATION_SECONDS: float = 45.0
 
 # Merge gap — consecutive excited utterances within this window are joined
 MERGE_GAP_SECONDS: float = 5.0
+
+# Fade-to-black transition duration (seconds). Set to 0.0 to disable fades.
+FADE_DURATION_SECONDS: float = 0.5
+
+# Encoding quality for re-encoded clips (lower = better quality, 18 ≈ visually lossless)
+CLIP_CRF: int = 18
+
+# Audio bitrate for re-encoded clips
+CLIP_AUDIO_BITRATE: str = "192k"
 
 # API-Football (api-sports.io) — header-based auth with x-rapidapi-key
 API_FOOTBALL_KEY: str = os.environ.get("API_FOOTBALL_KEY", "")

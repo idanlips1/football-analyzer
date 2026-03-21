@@ -106,54 +106,64 @@ def cut_clip(
 ) -> Path:
     """Cut a clip from *video_path* between start and end.
 
-    When *fade_duration* is 0 (default), stream copy is used — near-instant but
-    no filters.  When *fade_duration* > 0, the clip is re-encoded with a video
-    and audio fade-in/fade-out of that length (seconds).
+    When *fade_duration* > 0, re-encodes with fade-to/from-black on both
+    video and audio tracks (libx264 + AAC).  Otherwise uses stream copy
+    with accurate seeking (``-ss`` after ``-i``).
+
     Returns *output_path* on success.
     Raises FFmpegError if the cut fails.
     """
+    from config.settings import CLIP_AUDIO_BITRATE, CLIP_CRF
+
+    duration = end_seconds - start_seconds
+
     if fade_duration > 0:
-        clip_duration = end_seconds - start_seconds
-        fade_out_start = max(0.0, clip_duration - fade_duration)
-        vf = (
-            f"fade=t=in:st=0:d={fade_duration:.3f},"
-            f"fade=t=out:st={fade_out_start:.3f}:d={fade_duration:.3f}"
-        )
-        af = (
-            f"afade=t=in:st=0:d={fade_duration:.3f},"
-            f"afade=t=out:st={fade_out_start:.3f}:d={fade_duration:.3f}"
-        )
+        fade = min(fade_duration, duration / 2)
+        fade_out_start = duration - fade
         cmd = [
             "ffmpeg",
             "-y",
             "-ss",
             f"{start_seconds:.3f}",
-            "-to",
-            f"{end_seconds:.3f}",
             "-i",
             str(video_path),
+            "-t",
+            f"{duration:.3f}",
             "-vf",
-            vf,
+            f"fade=t=in:st=0:d={fade:.3f},fade=t=out:st={fade_out_start:.3f}:d={fade:.3f}",
             "-af",
-            af,
+            f"afade=t=in:st=0:d={fade:.3f},afade=t=out:st={fade_out_start:.3f}:d={fade:.3f}",
+            "-c:v",
+            "libx264",
+            "-crf",
+            str(CLIP_CRF),
+            "-preset",
+            "ultrafast",
+            "-c:a",
+            "aac",
+            "-b:a",
+            CLIP_AUDIO_BITRATE,
+            "-avoid_negative_ts",
+            "make_zero",
             str(output_path),
         ]
     else:
         cmd = [
             "ffmpeg",
             "-y",
-            "-ss",
-            f"{start_seconds:.3f}",
-            "-to",
-            f"{end_seconds:.3f}",
             "-i",
             str(video_path),
+            "-ss",
+            f"{start_seconds:.3f}",
+            "-t",
+            f"{duration:.3f}",
             "-c",
             "copy",
             "-avoid_negative_ts",
             "make_zero",
             str(output_path),
         ]
+
     log.info("Cutting clip %.1f–%.1fs → %s", start_seconds, end_seconds, output_path.name)
     try:
         subprocess.run(cmd, capture_output=True, text=True, check=True)  # nosec B603
