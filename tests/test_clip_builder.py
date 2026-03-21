@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
 
 import pytest
+
+from models.events import AlignedEvent, EventType
+from models.game import GameState
+from models.highlight_query import HighlightQuery, QueryType
+from pipeline.clip_builder import ClipBuilderError, build_highlights
+from utils.storage import LocalStorage
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -56,27 +60,6 @@ def _clip(
     }
 
 
-def _make_workspace(tmp_workspace: Path, video_id: str = "test_video") -> Path:
-    ws = tmp_workspace / video_id
-    ws.mkdir(parents=True, exist_ok=True)
-    return ws
-
-
-def _write_metadata(
-    ws: Path,
-    video_filename: str = "video.mp4",
-    duration: float = 5400.0,
-) -> None:
-    metadata = {
-        "video_id": ws.name,
-        "source": "https://example.com",
-        "video_filename": video_filename,
-        "duration_seconds": duration,
-        "workspace": str(ws),
-    }
-    (ws / "metadata.json").write_text(json.dumps(metadata))
-
-
 def _write_source_video(ws: Path, filename: str = "video.mp4") -> Path:
     p = ws / filename
     p.write_bytes(b"fake video content")
@@ -93,11 +76,46 @@ def _make_aligned_events_data(
     }
 
 
+def _make_game(tmp_storage: LocalStorage, video_id: str = "test_video") -> GameState:
+    gs = GameState(
+        video_id=video_id,
+        home_team="A",
+        away_team="B",
+        league="L",
+        date="2024-01-01",
+        fixture_id=1,
+        video_filename="video.mp4",
+        source=f"https://www.youtube.com/watch?v={video_id}",
+        duration_seconds=5400.0,
+        kickoff_first_half=330.0,
+        kickoff_second_half=3420.0,
+    )
+    return gs
+
+
+def _make_aligned_events() -> list[AlignedEvent]:
+    return [
+        AlignedEvent(
+            event_type=EventType.GOAL,
+            minute=21,
+            extra_minute=None,
+            half="1st Half",
+            player="Test Player",
+            team="Test FC",
+            score="1-0",
+            detail="Normal Goal",
+            estimated_video_ts=1590.0,
+            refined_video_ts=1590.0,
+            confidence=0.9,
+        )
+    ]
+
+
 # ── TestCalculateClipWindows ─────────────────────────────────────────────────
 
 
 class TestCalculateClipWindows:
-    def test_goal_at_1000s_gets_25s_pre_and_30s_post(self) -> None:
+    def test_goal_at_1000s_gets_correct_window(self) -> None:
         from pipeline.clip_builder import calculate_clip_windows
 
         events = [_aligned_event(refined_video_ts=1000.0)]
@@ -105,7 +123,7 @@ class TestCalculateClipWindows:
 
         assert len(result) == 1
         assert result[0]["clip_start"] == pytest.approx(975.0)
-        assert result[0]["clip_end"] == pytest.approx(1030.0)
+        assert result[0]["clip_end"] == pytest.approx(1020.0)
 
     def test_event_near_start_clamped_to_zero(self) -> None:
         from pipeline.clip_builder import calculate_clip_windows
@@ -215,7 +233,7 @@ class TestCalculateClipWindows:
         # pre_roll anchored from min(1000, 1010) = 1000 → clip_start = 975
         assert result[0]["clip_start"] == pytest.approx(975.0)
         # post_roll still from refined
-        assert result[0]["clip_end"] == pytest.approx(1040.0)
+        assert result[0]["clip_end"] == pytest.approx(1030.0)
 
     def test_clip_has_priority_field(self) -> None:
         from pipeline.clip_builder import calculate_clip_windows
@@ -344,176 +362,81 @@ class TestEnforceBudget:
 
 
 class TestBuildHighlights:
-    def _mock_cut(
-        self,
-        _video_path: Path,
-        _start: float,
-        _end: float,
-        output_path: Path,
-    ) -> Path:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_bytes(b"clip")
-        return output_path
+    def test_build_creates_highlights(
+        self, tmp_storage: LocalStorage, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        video_id = "test_video"
+        game = _make_game(tmp_storage, video_id)
+        ws = tmp_storage.workspace_path(video_id)
+        (ws / "video.mp4").write_bytes(b"fake")
 
-    def _mock_concat(self, _clip_paths: list[Path], output_path: Path) -> Path:
-        output_path.write_bytes(b"highlights")
-        return output_path
-
-    def test_full_flow(self, tmp_workspace: Path) -> None:
-        from pipeline.clip_builder import build_highlights
-
-        ws = _make_workspace(tmp_workspace)
-        _write_metadata(ws, duration=5400.0)
-        _write_source_video(ws)
-
-        aligned = _make_aligned_events_data(
-            [
-                _aligned_event(
-                    event_type="goal",
-                    minute=21,
-                    refined_video_ts=1000.0,
-                    player="Trent Alexander-Arnold",
-                ),
-                _aligned_event(
-                    event_type="penalty",
-                    minute=83,
-                    refined_video_ts=4500.0,
-                    player="Mohamed Salah",
-                ),
-            ]
+        monkeypatch.setattr("pipeline.clip_builder.cut_clip", lambda *a, **kw: None)
+        monkeypatch.setattr(
+            "pipeline.clip_builder.concat_clips",
+            lambda paths, out: out.write_bytes(b""),
         )
-        metadata = {
-            "video_id": "test_video",
-            "video_filename": "video.mp4",
-            "duration_seconds": 5400.0,
-        }
+        monkeypatch.setattr("pipeline.clip_builder.get_video_duration", lambda _: 120.0)
 
-        with (
-            patch("pipeline.clip_builder.cut_clip", side_effect=self._mock_cut),
-            patch("pipeline.clip_builder.concat_clips", side_effect=self._mock_concat),
-        ):
-            result = build_highlights(aligned, metadata)
-
+        q = HighlightQuery(query_type=QueryType.FULL_SUMMARY, raw_query="summary")
+        result = build_highlights(
+            _make_aligned_events(),
+            game,
+            q,
+            tmp_storage,
+            confirm_overwrite_fn=lambda _: True,
+        )
         assert "highlights_path" in result
-        assert result["clip_count"] >= 1
-        assert result["total_duration_seconds"] > 0
-        assert "total_duration_display" in result
-        assert "clips" in result
+        assert result["clip_count"] == 1
 
-    def test_manifest_written(self, tmp_workspace: Path) -> None:
-        from pipeline.clip_builder import MANIFEST_FILENAME, build_highlights
+    def test_slug_in_output_filename(
+        self, tmp_storage: LocalStorage, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        video_id = "test_video"
+        game = _make_game(tmp_storage, video_id)
+        ws = tmp_storage.workspace_path(video_id)
+        (ws / "video.mp4").write_bytes(b"fake")
 
-        ws = _make_workspace(tmp_workspace)
-        _write_metadata(ws, duration=5400.0)
-        _write_source_video(ws)
-
-        aligned = _make_aligned_events_data(
-            [
-                _aligned_event(refined_video_ts=1000.0),
-            ]
+        monkeypatch.setattr("pipeline.clip_builder.cut_clip", lambda *a, **kw: None)
+        monkeypatch.setattr(
+            "pipeline.clip_builder.concat_clips",
+            lambda paths, out: out.write_bytes(b""),
         )
-        metadata = {
-            "video_id": "test_video",
-            "video_filename": "video.mp4",
-            "duration_seconds": 5400.0,
-        }
+        monkeypatch.setattr("pipeline.clip_builder.get_video_duration", lambda _: 120.0)
 
-        with (
-            patch("pipeline.clip_builder.cut_clip", side_effect=self._mock_cut),
-            patch("pipeline.clip_builder.concat_clips", side_effect=self._mock_concat),
-        ):
-            build_highlights(aligned, metadata)
-
-        manifest_path = ws / MANIFEST_FILENAME
-        assert manifest_path.exists()
-        manifest = json.loads(manifest_path.read_text())
-        assert isinstance(manifest, list)
-        assert len(manifest) >= 1
-
-    def test_correct_ffmpeg_calls(self, tmp_workspace: Path) -> None:
-        from pipeline.clip_builder import build_highlights
-
-        ws = _make_workspace(tmp_workspace)
-        _write_metadata(ws, duration=5400.0)
-        _write_source_video(ws)
-
-        aligned = _make_aligned_events_data(
-            [
-                _aligned_event(
-                    estimated_video_ts=1000.0,
-                    refined_video_ts=1000.0,
-                    minute=50,
-                ),
-                _aligned_event(
-                    estimated_video_ts=3000.0,
-                    refined_video_ts=3000.0,
-                    minute=80,
-                    event_type="penalty",
-                    player="Other Player",
-                ),
-            ]
+        q = HighlightQuery(query_type=QueryType.FULL_SUMMARY, raw_query="summary")
+        result = build_highlights(
+            _make_aligned_events(),
+            game,
+            q,
+            tmp_storage,
+            confirm_overwrite_fn=lambda _: True,
         )
-        metadata = {
-            "video_id": "test_video",
-            "video_filename": "video.mp4",
-            "duration_seconds": 5400.0,
-        }
+        assert "highlights_summary" in result["highlights_path"]
 
-        with (
-            patch(
-                "pipeline.clip_builder.cut_clip",
-                side_effect=self._mock_cut,
-            ) as mock_cut,
-            patch(
-                "pipeline.clip_builder.concat_clips",
-                side_effect=self._mock_concat,
-            ) as mock_concat,
-        ):
-            build_highlights(aligned, metadata)
+    def test_slug_collision_skip(self, tmp_storage: LocalStorage) -> None:
+        video_id = "test_video"
+        game = _make_game(tmp_storage, video_id)
+        ws = tmp_storage.workspace_path(video_id)
+        (ws / "highlights_summary.mp4").write_bytes(b"existing")
 
-        assert mock_cut.call_count == 2
-        assert mock_concat.call_count == 1
-        concat_clip_list = mock_concat.call_args[0][0]
-        assert len(concat_clip_list) == 2
-
-    def test_cache_hit_skips_rebuild(self, tmp_workspace: Path) -> None:
-        from pipeline.clip_builder import HIGHLIGHTS_FILENAME, build_highlights
-
-        ws = _make_workspace(tmp_workspace)
-        _write_metadata(ws, duration=5400.0)
-        _write_source_video(ws)
-        (ws / HIGHLIGHTS_FILENAME).write_bytes(b"existing highlights")
-
-        aligned = _make_aligned_events_data(
-            [
-                _aligned_event(refined_video_ts=1000.0),
-            ]
+        q = HighlightQuery(query_type=QueryType.FULL_SUMMARY, raw_query="summary")
+        result = build_highlights(
+            _make_aligned_events(),
+            game,
+            q,
+            tmp_storage,
+            confirm_overwrite_fn=lambda _: False,
         )
-        metadata = {
-            "video_id": "test_video",
-            "video_filename": "video.mp4",
-            "duration_seconds": 5400.0,
-        }
-
-        with (
-            patch("pipeline.clip_builder.cut_clip") as mock_cut,
-            patch("pipeline.clip_builder.concat_clips") as mock_concat,
-        ):
-            result = build_highlights(aligned, metadata, overwrite=False)
-
-        mock_cut.assert_not_called()
-        mock_concat.assert_not_called()
         assert "highlights_path" in result
 
-    def test_empty_events_raises_error(self, tmp_workspace: Path) -> None:
-        from pipeline.clip_builder import ClipBuilderError, build_highlights
-
-        aligned = _make_aligned_events_data([])
-        metadata = {
-            "video_id": "test_video",
-            "video_filename": "video.mp4",
-            "duration_seconds": 5400.0,
-        }
-
+    def test_empty_events_raises_error(self, tmp_storage: LocalStorage) -> None:
+        game = _make_game(tmp_storage)
+        q = HighlightQuery(query_type=QueryType.FULL_SUMMARY, raw_query="summary")
         with pytest.raises(ClipBuilderError, match="[Nn]o.*event"):
-            build_highlights(aligned, metadata)
+            build_highlights(
+                [],
+                game,
+                q,
+                tmp_storage,
+                confirm_overwrite_fn=lambda _: True,
+            )

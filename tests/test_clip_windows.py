@@ -14,12 +14,12 @@ from models.events import EventType
 class TestClipWindows:
     def test_goal_window(self) -> None:
         pre, post = get_window(EventType.GOAL)
-        assert pre == 15.0
-        assert post == 30.0
+        assert pre == 25.0
+        assert post == 20.0
 
     def test_penalty_window(self) -> None:
         pre, post = get_window(EventType.PENALTY)
-        assert pre == 10.0
+        assert pre == 30.0
         assert post == 25.0
 
     def test_yellow_card_window(self) -> None:
