@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from unittest.mock import patch
 
 from pipeline.transcription import (
@@ -16,6 +15,7 @@ from pipeline.transcription import (
     identify_commentators,
     transcribe,
 )
+from utils.storage import LocalStorage
 
 # ── identify_commentators ──────────────────────────────────────────────────
 
@@ -89,13 +89,12 @@ class TestIdentifyCommentators:
 
 class TestTranscribe:
     @staticmethod
-    def _make_metadata(workspace: Path) -> dict:
-        workspace.mkdir(parents=True, exist_ok=True)
-        (workspace / "match.mp4").write_bytes(b"\x00" * 512)
+    def _make_metadata(storage: LocalStorage, video_id: str) -> dict:
+        ws = storage.workspace_path(video_id)
+        (ws / "match.mp4").write_bytes(b"\x00" * 512)
         return {
-            "video_id": "test1",
+            "video_id": video_id,
             "video_filename": "match.mp4",
-            "workspace": str(workspace),
         }
 
     @staticmethod
@@ -106,40 +105,37 @@ class TestTranscribe:
             {"speaker": "A", "text": "He scores!", "start": 8000, "end": 12000},
         ]
 
-    def test_full_flow_saves_transcription(self, tmp_path: Path) -> None:
-        ws = tmp_path / "pipeline_workspace" / "test1"
-        metadata = self._make_metadata(ws)
+    def test_full_flow_saves_transcription(self, tmp_storage: LocalStorage) -> None:
+        metadata = self._make_metadata(tmp_storage, "test1")
         fake_utts = self._fake_utterances()
 
         with (
             patch("pipeline.transcription.extract_audio"),
             patch("pipeline.transcription._call_assemblyai", return_value=fake_utts),
         ):
-            result = transcribe(metadata)
+            result = transcribe(metadata, tmp_storage)
 
         assert result["total_utterances"] == 3
         assert result["commentator_speakers"] == ["A", "B"]
-        assert (ws / "transcription.json").exists()
+        assert tmp_storage.local_path("test1", "transcription.json").exists()
 
-    def test_cache_hit_skips_processing(self, tmp_path: Path) -> None:
-        ws = tmp_path / "pipeline_workspace" / "test2"
-        metadata = self._make_metadata(ws)
+    def test_cache_hit_skips_processing(self, tmp_storage: LocalStorage) -> None:
+        metadata = self._make_metadata(tmp_storage, "test2")
         fake_utts = self._fake_utterances()
 
         with (
             patch("pipeline.transcription.extract_audio"),
             patch("pipeline.transcription._call_assemblyai", return_value=fake_utts) as mock_api,
         ):
-            first = transcribe(metadata)
-            second = transcribe(metadata)
+            first = transcribe(metadata, tmp_storage)
+            second = transcribe(metadata, tmp_storage)
 
         assert first == second
         assert mock_api.call_count == 1
 
-    def test_skips_audio_extraction_if_file_exists(self, tmp_path: Path) -> None:
-        ws = tmp_path / "pipeline_workspace" / "test3"
-        metadata = self._make_metadata(ws)
-        (ws / "audio.wav").write_bytes(b"\x00" * 256)
+    def test_skips_audio_extraction_if_file_exists(self, tmp_storage: LocalStorage) -> None:
+        metadata = self._make_metadata(tmp_storage, "test3")
+        tmp_storage.local_path("test3", "audio.wav").write_bytes(b"\x00" * 256)
 
         with (
             patch("pipeline.transcription.extract_audio") as mock_extract,
@@ -148,13 +144,12 @@ class TestTranscribe:
                 return_value=self._fake_utterances(),
             ),
         ):
-            transcribe(metadata)
+            transcribe(metadata, tmp_storage)
 
         mock_extract.assert_not_called()
 
-    def test_transcription_json_is_valid(self, tmp_path: Path) -> None:
-        ws = tmp_path / "pipeline_workspace" / "test4"
-        metadata = self._make_metadata(ws)
+    def test_transcription_json_is_valid(self, tmp_storage: LocalStorage) -> None:
+        metadata = self._make_metadata(tmp_storage, "test4")
 
         with (
             patch("pipeline.transcription.extract_audio"),
@@ -163,9 +158,9 @@ class TestTranscribe:
                 return_value=self._fake_utterances(),
             ),
         ):
-            result = transcribe(metadata)
+            result = transcribe(metadata, tmp_storage)
 
-        raw = json.loads((ws / "transcription.json").read_text())
+        raw = json.loads(tmp_storage.local_path("test4", "transcription.json").read_text())
         assert raw["utterances"] == result["utterances"]
         assert raw["commentator_speakers"] == ["A", "B"]
 

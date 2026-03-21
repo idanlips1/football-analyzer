@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from models.events import EventType, MatchEvent
+from utils.storage import LocalStorage
 
 
 @pytest.fixture()
@@ -26,10 +27,6 @@ def tmp_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr("pipeline.edr.PIPELINE_WORKSPACE", workspace)
     monkeypatch.setattr("pipeline.filtering.PIPELINE_WORKSPACE", workspace)
     monkeypatch.setattr("pipeline.video.PIPELINE_WORKSPACE", workspace)
-    monkeypatch.setattr("pipeline.match_events.PIPELINE_WORKSPACE", workspace)
-    monkeypatch.setattr("pipeline.match_finder.PIPELINE_WORKSPACE", workspace)
-    monkeypatch.setattr("pipeline.event_aligner.PIPELINE_WORKSPACE", workspace)
-    monkeypatch.setattr("pipeline.clip_builder.PIPELINE_WORKSPACE", workspace)
     return workspace
 
 
@@ -44,6 +41,14 @@ def fake_ffprobe_duration(monkeypatch: pytest.MonkeyPatch) -> Callable[[float], 
         )
 
     return _patch
+
+
+@pytest.fixture()
+def tmp_storage(tmp_path: Path) -> LocalStorage:
+    """LocalStorage backed by a temporary directory for test isolation."""
+    root = tmp_path / "pipeline_workspace"
+    root.mkdir()
+    return LocalStorage(root=root)
 
 
 @pytest.fixture()

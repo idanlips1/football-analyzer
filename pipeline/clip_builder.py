@@ -9,8 +9,11 @@ Takes aligned events (from Stage 4) and produces a highlights video by:
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import re
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -19,11 +22,13 @@ from config.settings import (
     DEFAULT_HIGHLIGHTS_DURATION_SECONDS,
     FADE_DURATION_SECONDS,
     MERGE_GAP_SECONDS,
-    PIPELINE_WORKSPACE,
 )
 from models.events import AlignedEvent, seconds_to_timestamp
+from models.game import GameState
+from models.highlight_query import HighlightQuery
 from utils.ffmpeg import FFmpegError, FFprobeError, concat_clips, cut_clip, get_video_duration
 from utils.logger import get_logger
+from utils.storage import StorageBackend
 
 log = get_logger(__name__)
 
@@ -33,6 +38,26 @@ MANIFEST_FILENAME = "clip_manifest.json"
 
 class ClipBuilderError(Exception):
     """Raised when clip building fails."""
+
+
+ConfirmOverwriteFn = Callable[[str], bool]
+
+
+def _interactive_confirm_overwrite(path: str) -> bool:
+    choice = input(f"  '{path}' already exists. Overwrite? [Y/n] ").strip().lower()
+    return choice in ("", "y", "yes")
+
+
+def _query_slug(query: HighlightQuery) -> str:
+    """Return a filesystem-safe slug from *query*.
+
+    Non-ASCII characters (e.g. accented letters) are dropped rather than
+    transliterated — this is acceptable for a local filename slug.
+    Falls back to query_type.value when raw_query is empty or all-special-chars.
+    """
+    base = query.raw_query.lower()
+    slug = re.sub(r"[^a-z0-9]+", "_", base).strip("_")[:40]
+    return slug or query.query_type.value
 
 
 def _event_summary(event: AlignedEvent) -> str:
@@ -120,11 +145,13 @@ def enforce_budget(
 
     for clip in by_priority:
         duration = clip["clip_end"] - clip["clip_start"]
+        # `not selected` is the "always keep first clip" guarantee — the highest-priority
+        # clip is unconditionally included even if it alone exceeds the budget.
         if not selected or remaining >= duration:
             selected.append(clip)
             remaining -= duration
 
-    if not selected:
+    if not selected:  # safety net: by_priority is non-empty if clips is non-empty
         selected.append(by_priority[0])
 
     selected.sort(key=lambda c: c["clip_start"])
@@ -132,27 +159,29 @@ def enforce_budget(
 
 
 def build_highlights(
-    aligned_events_data: dict[str, Any],
-    metadata: dict[str, Any],
+    events: list[AlignedEvent],
+    game: GameState,
+    query: HighlightQuery,
+    storage: StorageBackend,
     *,
-    overwrite: bool = False,
+    confirm_overwrite_fn: ConfirmOverwriteFn = _interactive_confirm_overwrite,
 ) -> dict[str, Any]:
     """Orchestrate clip building: windows → merge → budget → cut → concat.
 
-    Cache-aware: skips work when highlights.mp4 already exists and
-    *overwrite* is False.
+    Cache-aware: if the output file already exists, calls confirm_overwrite_fn
+    to decide whether to regenerate. Returns cached result without re-cutting if
+    confirm_overwrite_fn returns False.
     """
-    video_id: str = metadata["video_id"]
-    workspace = PIPELINE_WORKSPACE / video_id
-    workspace.mkdir(parents=True, exist_ok=True)
-    output_path = workspace / HIGHLIGHTS_FILENAME
+    if not events:
+        raise ClipBuilderError("No events provided — nothing to build")
 
-    events_list: list[dict[str, Any]] = aligned_events_data.get("events", [])
-    if not events_list:
-        raise ClipBuilderError("No events in aligned_events_data — nothing to build")
+    workspace = storage.workspace_path(game.video_id)
+    slug = _query_slug(query)
+    output_path = workspace / f"highlights_{slug}.mp4"
+    video_path = workspace / game.video_filename
 
-    if output_path.exists() and not overwrite:
-        log.info("Clip builder cache hit — %s already exists", HIGHLIGHTS_FILENAME)
+    if output_path.exists() and not confirm_overwrite_fn(str(output_path)):
+        log.info("Clip builder cache hit — %s already exists", output_path.name)
         manifest_path = workspace / MANIFEST_FILENAME
         cached_clips: list[dict[str, Any]] = []
         if manifest_path.exists():
@@ -166,10 +195,9 @@ def build_highlights(
             "clips": cached_clips,
         }
 
-    video_duration: float = metadata["duration_seconds"]
-    video_path = workspace / metadata["video_filename"]
-
-    clips = calculate_clip_windows(events_list, video_duration)
+    # dataclasses.asdict converts StrEnum fields to their string values, which is
+    # exactly what calculate_clip_windows / AlignedEvent.from_dict expect.
+    clips = calculate_clip_windows([dataclasses.asdict(e) for e in events], game.duration_seconds)
     clips = merge_clips(clips)
     clips = enforce_budget(clips)
 
@@ -212,8 +240,6 @@ def build_highlights(
         raise ClipBuilderError(f"Failed to concatenate clips: {exc}") from exc
     log.info("Concatenation finished in %.1f s", time.monotonic() - t_concat)
 
-    # Use the actual file duration (accounts for keyframe-seeking) with
-    # a fallback to manifest arithmetic if ffprobe fails.
     manifest_duration = sum(c["clip_end"] - c["clip_start"] for c in clips)
     try:
         total_duration = get_video_duration(output_path)

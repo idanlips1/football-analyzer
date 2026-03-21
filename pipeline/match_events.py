@@ -11,9 +11,10 @@ import time
 import urllib.request
 from typing import Any
 
-from config.settings import API_FOOTBALL_BASE_URL, API_FOOTBALL_KEY, PIPELINE_WORKSPACE
+from config.settings import API_FOOTBALL_BASE_URL, API_FOOTBALL_KEY
 from models.events import EventType, MatchEvent
 from utils.logger import get_logger
+from utils.storage import StorageBackend
 
 log = get_logger(__name__)
 
@@ -27,7 +28,7 @@ class MatchEventsError(Exception):
 # ── Public API ──────────────────────────────────────────────────────────────
 
 
-def fetch_match_events(metadata: dict[str, Any]) -> dict[str, Any]:
+def fetch_match_events(metadata: dict[str, Any], storage: StorageBackend) -> dict[str, Any]:
     """Fetch match events for a fixture and cache them.
 
     *metadata* must contain ``video_id`` and ``fixture_id``.  Returns a dict
@@ -40,13 +41,11 @@ def fetch_match_events(metadata: dict[str, Any]) -> dict[str, Any]:
     if not fixture_id:
         raise MatchEventsError("metadata is missing 'fixture_id' — cannot fetch match events")
 
-    workspace = PIPELINE_WORKSPACE / video_id
-    workspace.mkdir(parents=True, exist_ok=True)
-    cache_path = workspace / MATCH_EVENTS_FILENAME
+    cache_path = storage.local_path(video_id, MATCH_EVENTS_FILENAME)
 
     if cache_path.exists():
         log.info("Match events cache hit for fixture %s", fixture_id)
-        cached: dict[str, Any] = json.loads(cache_path.read_text())
+        cached: dict[str, Any] = storage.read_json(video_id, MATCH_EVENTS_FILENAME)
         return cached
 
     if not API_FOOTBALL_KEY:
@@ -63,7 +62,7 @@ def fetch_match_events(metadata: dict[str, Any]) -> dict[str, Any]:
         "events": [ev.to_dict() for ev in parsed],
     }
 
-    cache_path.write_text(json.dumps(result, indent=2))
+    storage.write_json(video_id, MATCH_EVENTS_FILENAME, result)
     log.info(
         "Match events saved (%d events) → %s",
         len(parsed),

@@ -11,13 +11,12 @@ build-up rather than the post-event reaction.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from typing import Any
 
-from config.settings import PIPELINE_WORKSPACE
 from models.events import AlignedEvent, EventType, MatchEvent
 from utils.logger import get_logger
+from utils.storage import StorageBackend
 
 log = get_logger(__name__)
 
@@ -27,7 +26,7 @@ _SEARCH_WINDOW_SECONDS = 60.0
 
 
 class EventAlignerError(Exception):
-    """Raised when event alignment fails (e.g. missing kickoff data)."""
+    """Raised when event alignment fails."""
 
 
 # ── Public API ──────────────────────────────────────────────────────────────
@@ -132,35 +131,31 @@ _PREFER_BEFORE_TYPES: frozenset[EventType] = frozenset(
 
 def align_events(
     match_events_data: dict[str, Any],
-    transcription: dict[str, Any],
     metadata: dict[str, Any],
+    storage: StorageBackend,
+    kickoff_first: float,
+    kickoff_second: float,
 ) -> dict[str, Any]:
     """Orchestrate Stage 4: estimate → refine → filter → cache.
 
-    Reads match events and transcription data, produces a list of
-    :class:`AlignedEvent` dicts, and caches the result as
+    Reads match events and transcription data (from storage), produces a list
+    of :class:`AlignedEvent` dicts, and caches the result as
     ``aligned_events.json`` in the video workspace.
+
+    Kickoff timestamps are passed explicitly — they are confirmed interactively
+    during ingest before alignment runs.
     """
     video_id: str = match_events_data.get("video_id", metadata.get("video_id", ""))
-    workspace = PIPELINE_WORKSPACE / video_id
-    workspace.mkdir(parents=True, exist_ok=True)
-    cache_path = workspace / ALIGNMENT_FILENAME
+    cache_path = storage.local_path(video_id, ALIGNMENT_FILENAME)
 
     if cache_path.exists():
         log.info("Stage 4 cache hit — loading aligned events for %s", video_id)
-        return json.loads(cache_path.read_text())  # type: ignore[no-any-return]
+        return storage.read_json(video_id, ALIGNMENT_FILENAME)
 
-    kickoff_first: float | None = transcription.get("kickoff_first_half")
-    kickoff_second: float | None = transcription.get("kickoff_second_half")
-
-    if kickoff_first is None or kickoff_second is None:
-        raise EventAlignerError(
-            f"Missing kickoff timestamps in transcription — "
-            f"first={kickoff_first}, second={kickoff_second}"
-        )
+    transcription = storage.read_json(video_id, "transcription.json")
+    utterances: list[dict[str, Any]] = transcription.get("utterances", [])
 
     raw_events: list[dict[str, Any]] = match_events_data.get("events", [])
-    utterances: list[dict[str, Any]] = transcription.get("utterances", [])
 
     aligned: list[AlignedEvent] = []
     for ev_dict in raw_events:
@@ -196,11 +191,10 @@ def align_events(
 
     result: dict[str, Any] = {
         "video_id": video_id,
-        "workspace": str(workspace),
         "event_count": len(aligned),
         "events": [a.to_dict() for a in aligned],
     }
 
-    cache_path.write_text(json.dumps(result, indent=2))
-    log.info("Stage 4 complete — saved to %s", cache_path)
+    storage.write_json(video_id, ALIGNMENT_FILENAME, result)
+    log.info("Stage 4 complete — saved %s for %s", ALIGNMENT_FILENAME, video_id)
     return result
