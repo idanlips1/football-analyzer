@@ -123,13 +123,18 @@ Liveness/readiness probe for ACA.
 { "status": "ok" }
 ```
 
+### Authentication
+
+API key via `X-API-Key` header. FastAPI middleware validates against keys stored in an env var (`API_KEYS`, comma-separated). All endpoints except `GET /health` require a valid key. No key → `401 Unauthorized`.
+
+No rate limiting — only key holders can submit jobs, and you control who gets keys.
+
 ### Key Decisions
 
 - `202 Accepted` — job is queued, not yet complete
 - Cache hit on `POST /jobs`: returns `200` with `status: completed` and existing `download_url` (no queue message)
 - Cache miss: returns `202 Accepted` with `status: queued`
 - SAS URLs expire after 24h
-- No auth initially (API key middleware added later)
 - Progress field maps to pipeline stage names
 - Error response: `{ "error": { "code": "not_found", "message": "Job not found" } }`
 
