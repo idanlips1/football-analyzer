@@ -103,12 +103,24 @@ POST to `webhook_url` on completion or failure:
 }
 ```
 
+### GET /health
+
+Liveness/readiness probe for ACA.
+
+```json
+// Response: 200
+{ "status": "ok" }
+```
+
 ### Key Decisions
 
 - `202 Accepted` — job is queued, not yet complete
+- Cache hit on `POST /jobs`: returns `200` with `status: completed` and existing `download_url` (no queue message)
+- Cache miss: returns `202 Accepted` with `status: queued`
 - SAS URLs expire after 24h
 - No auth initially (API key middleware added later)
 - Progress field maps to pipeline stage names
+- Error response: `{ "error": { "code": "not_found", "message": "Job not found" } }`
 
 ## Storage Layout
 
@@ -158,7 +170,13 @@ Exact same query for same match returns existing highlights. Keyed by `video_id 
 
 ### API behavior
 
-`POST /jobs` checks for cached result first. If found, returns immediately with `status: completed`. If video is cached but query is new, worker skips stages 1-4 and only runs clip building.
+`POST /jobs` checks for cached result first. If found, returns `200` with `status: completed` and the existing SAS URL (no queue message). If video is cached but query is new, worker skips stages 1-4 and only runs clip building.
+
+Cache key for highlights: SHA-256 of `video_id + normalized_query` (lowercased, stripped). Two differently-worded queries that produce different event filters are treated as separate cache entries — this is acceptable; over-caching is worse than occasional re-cuts.
+
+### Duplicate job race condition
+
+Two near-simultaneous POSTs for the same query could both miss cache and both queue jobs. At this scale (few jobs/day) this is acceptable — the second job will be a no-op since all stages are cached by the time it runs. No distributed locking needed.
 
 ## Worker Design
 
@@ -170,16 +188,32 @@ Exact same query for same match returns existing highlights. Keyed by `video_id 
 4. On success: upload highlights, generate SAS URL, update job -> `completed`, fire webhook
 5. On failure: update job -> `failed` with error, fire webhook with error
 
+### Local temp staging (BlobStorage)
+
+FFmpeg requires local files. `BlobStorage` handles this transparently:
+
+1. `local_path(video_id, filename)` → downloads blob to a temp directory if not already present, returns local `Path`
+2. Pipeline stages run against local files as before (no code changes)
+3. `write_json()` / file writes → upload to blob after local write
+4. On job completion (success or failure) → delete the temp directory
+
+Temp dir: `/tmp/football-analyzer/{job_id}/` — isolated per job, cleaned up automatically.
+
+### Worker ephemeral storage
+
+90-min video (~2-4 GB) + audio (~200 MB) + clips (~1 GB) + highlights (~500 MB) ≈ up to 6 GB peak. Worker requests **20 GB ephemeral storage** per replica to handle worst case with headroom.
+
 ### Retry strategy
 
-- Queue visibility timeout: 35 min (longer than max job time)
+- Queue visibility timeout: 65 min (longer than max job time)
 - Max dequeue count: 3 -> poison queue after 3 failures
 - Retries are idempotent (completed stages cached in blob)
 
 ### Container specs
 
 - 2 vCPU, 4 GB RAM per replica
-- 30 min job timeout
+- 45 min job timeout (covers slow downloads + long transcriptions)
+- 20 GB ephemeral storage
 - Concurrency: 1 job per replica
 
 ## Pipeline Integration
@@ -199,9 +233,11 @@ Exact same query for same match returns existing highlights. Keyed by `video_id 
 
 ### What stays unchanged
 
-- `pipeline/*.py` — all 5 stages untouched
+- `pipeline/*.py` — all 5 stages untouched (they receive a `StorageBackend`; `BlobStorage` handles blob↔local staging transparently)
 - `models/*.py` — no changes
 - `utils/ffmpeg.py` — works on local temp files as before
+
+**Note:** Legacy `pipeline/ingestion.py` hardcodes `PIPELINE_WORKSPACE` and is not used. The worker uses `match_finder.py` which accepts `StorageBackend`.
 
 ### Backend switching
 
@@ -249,6 +285,18 @@ football-analyzer/
 - `azure-storage-queue` — queue send/receive
 - `azure-data-tables` — Table Storage CRUD
 - `httpx` — async HTTP for webhook delivery
+
+### Webhook retry
+
+3 attempts with exponential backoff (1s, 4s, 16s). Failures logged but do not affect job status — the job is still `completed`/`failed` regardless of webhook delivery.
+
+### Docker image strategy
+
+Single image, two entrypoints:
+- API: `CMD ["uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "8000"]`
+- Worker: `CMD ["python", "-m", "worker.runner"]`
+
+ACA container apps override the command per service. No separate `Dockerfile.worker` needed.
 
 ## Local Development
 
