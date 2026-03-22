@@ -34,13 +34,24 @@ Client --> FastAPI (ACA) --> Azure Storage Queue --> Worker (ACA, KEDA-scaled)
 
 All storage services live in a single Azure Storage Account.
 
-### Worker Scaling
+### Scaling
 
-- KEDA scales on queue depth: 0 replicas when empty, 1+ when messages arrive
-- Sequential processing within each replica
-- Scale-to-zero after ~5 min idle
-- Max 3 replicas (configurable) if queue backs up
-- No container-per-request — warm worker stays alive between jobs
+Always-on, minimal resources. No KEDA, no scale-to-zero — unnecessary complexity for this volume.
+
+- **API:** 1 replica, 0.25 vCPU, 0.5 GB RAM (FastAPI serving lightweight JSON)
+- **Worker:** 1 replica, 2 vCPU, 4 GB RAM (FFmpeg needs CPU/memory)
+
+One worker processing jobs sequentially is sufficient for a few jobs/day. If volume grows, bump to 2 replicas later.
+
+### Why a queue
+
+The queue decouples the API from the worker so the API can return `202` instantly instead of blocking for 10-30 minutes. Benefits:
+
+- **Reliability:** if the worker crashes mid-job, the message reappears and gets retried automatically
+- **Backpressure:** if multiple jobs arrive while the worker is busy, they queue up and process in order
+- **Simplicity:** no background threads, no in-process job management, no lost jobs on restart
+
+One queue is enough — we have one type of work (generate highlights). Multiple queues would only matter with different job types or priority tiers.
 
 ## API Design
 
@@ -329,16 +340,18 @@ Single `main.bicep` provisions:
 - Resource Group
 - Storage Account (blob, queue, table)
 - Container Apps Environment
-- API Container App (scale-to-zero, port 8000)
-- Worker Container App (KEDA queue scaler, scale 0-3)
+- API Container App (always-on, 1 replica, 0.25 vCPU / 0.5 GB, port 8000)
+- Worker Container App (always-on, 1 replica, 2 vCPU / 4 GB)
 - Container Registry (ACR) for Docker images
 
 ## Cost Estimate (low volume)
 
 | Service | Cost |
 |---------|------|
-| ACA (API, scale-to-zero) | ~$0 when idle, ~$0.01/hour when active |
-| ACA (Worker, scale-to-zero) | ~$0 when idle, ~$0.04/hour per job (2 vCPU) |
+| ACA (API, always-on, 0.25 vCPU) | ~$7/month |
+| ACA (Worker, always-on, 2 vCPU) | ~$58/month |
 | Blob Storage | ~$0.02/GB/month |
 | Table + Queue | Pennies/month |
-| **Total at ~5 jobs/day** | **~$5-10/month** |
+| **Total** | **~$65-70/month** |
+
+Higher than scale-to-zero but simpler, no cold starts, and predictable billing.
