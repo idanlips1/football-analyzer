@@ -12,9 +12,18 @@ uvicorn
 # LLM
 openai
 
+# Azure
+azure-storage-blob
+azure-storage-queue
+azure-data-tables
+
+# HTTP client (webhook delivery)
+httpx
+
 # Testing
 pytest
 pytest-cov
+pytest-asyncio
 
 # Static analysis
 ruff
