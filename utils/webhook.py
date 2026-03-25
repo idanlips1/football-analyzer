@@ -33,10 +33,13 @@ async def deliver_webhook(
                 log.info("Webhook delivered to %s (attempt %d)", url, attempt + 1)
                 return True
         except Exception:
-            delay = base_delay * (4 ** attempt)  # 1s, 4s, 16s
+            delay = base_delay * (4**attempt)  # 1s, 4s, 16s
             log.warning(
                 "Webhook delivery to %s failed (attempt %d/%d), retrying in %.1fs",
-                url, attempt + 1, max_retries, delay,
+                url,
+                attempt + 1,
+                max_retries,
+                delay,
             )
             if attempt < max_retries - 1:
                 await asyncio.sleep(delay)

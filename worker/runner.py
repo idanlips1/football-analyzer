@@ -90,9 +90,7 @@ def process_job(
                 blob_name,
                 expiry_hours=SAS_EXPIRY_HOURS,
             )
-            expires_at = (
-                datetime.now(UTC) + timedelta(hours=SAS_EXPIRY_HOURS)
-            ).isoformat()
+            expires_at = (datetime.now(UTC) + timedelta(hours=SAS_EXPIRY_HOURS)).isoformat()
 
         job_result = JobResult(
             download_url=download_url,
@@ -166,9 +164,7 @@ def run_worker(queue: JobQueue, store: JobStore, storage: StorageBackend) -> Non
             queue.delete(msg)
             continue
 
-        highlights_query = str(
-            msg.body.get("highlights_query") or "full match highlights"
-        )
+        highlights_query = str(msg.body.get("highlights_query") or "full match highlights")
 
         process_job(
             job_id=job_id,

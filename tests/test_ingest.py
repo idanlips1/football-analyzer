@@ -63,32 +63,26 @@ class TestIngestWritesGameJson:
     def test_game_json_written_after_successful_ingest(self, tmp_storage: LocalStorage) -> None:
         from ingest import _run_catalog_ingest
 
-        fake_game = {
+        fake_metadata = {
             "video_id": "istanbul-2005",
             "home_team": "Liverpool",
             "away_team": "AC Milan",
-            "league": "UEFA Champions League",
-            "date": "2004-05",
+            "competition": "UEFA Champions League",
+            "season_label": "2004-05",
             "fixture_id": 0,
             "video_filename": "match.mp4",
             "source": "catalog:istanbul-2005",
             "duration_seconds": 5400.0,
+        }
+
+        fake_transcription = {
             "kickoff_first_half": 330.0,
             "kickoff_second_half": 3420.0,
         }
 
-        def fake_stages(
-            _mid: str,
-            storage: LocalStorage,
-            *,
-            progress_callback: object = None,
-            kickoff_fn: object = None,
-        ) -> None:
-            storage.write_json("istanbul-2005", "game.json", fake_game)
-
         with (
-            patch("ingest.ingest_local_catalog_match"),
-            patch("ingest.run_catalog_stages_to_game_json", side_effect=fake_stages),
+            patch("ingest.ingest_local_catalog_match", return_value=fake_metadata),
+            patch("ingest.transcribe", return_value=fake_transcription),
             patch("builtins.input", lambda _: "/tmp/fake.mp4"),
         ):
             _run_catalog_ingest(

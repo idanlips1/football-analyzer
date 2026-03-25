@@ -8,7 +8,7 @@ from typing import cast
 from openai import OpenAI
 
 from config.settings import OPENAI_API_KEY, OPENAI_MODEL
-from models.events import AlignedEvent, EventType
+from models.events import EventType
 from models.game import GameState
 from models.highlight_query import HighlightQuery, QueryType
 from utils.logger import get_logger
@@ -27,7 +27,10 @@ JSON schema:
 {
   "query_type": "full_summary" | "event_filter" | "player",
   "event_types": [list of event type strings] | null,
-  "player_name": "exact player name from the provided list" | null
+  "player_name": "exact player name" | null,
+  "api_player_id": 12345 | null,
+  "api_team_id": 123 | null,
+  "api_event_type": "Goal" | "Card" | "subst" | "Var" | null
 }
 
 Valid event_type strings: goal, own_goal, penalty, red_card, yellow_card, var_review,
@@ -35,17 +38,52 @@ card, near_miss, save, shot_on_target, free_kick, corner, substitution, other
 
 Rules:
 - For general/summary queries → use full_summary
-- For event-type queries (e.g. "just goals", "cards and VAR") → use event_filter + event_types
-- For player queries (e.g. "Salah moments") → use player + player_name (exact name from list)
+- For event-type queries (e.g. "just goals", "cards and VAR") → use event_filter + event_types.
+  AND set api_event_type to the closest match if strictly one type (Goal, Card, subst, Var).
+  If multiple types, leave api_event_type null.
+- For player queries (e.g. "Salah moments") → use player AND player_name
+  AND set api_player_id to the numerical ID from the provided list.
 
 Return ONLY valid JSON, nothing else.\
 """
 
 
+def _get_players_map(fixture_id: int) -> dict[str, int]:
+    import urllib.request
+
+    from config.settings import API_FOOTBALL_BASE_URL, API_FOOTBALL_KEY
+
+    if not API_FOOTBALL_KEY:
+        return {}
+    url = f"{API_FOOTBALL_BASE_URL}/fixtures/lineups?fixture={fixture_id}"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "x-rapidapi-key": API_FOOTBALL_KEY,
+            "x-rapidapi-host": "v3.football.api-sports.io",
+        },
+    )
+    players_map = {}
+    try:
+        with urllib.request.urlopen(req) as resp:
+            body = json.loads(resp.read().decode())
+            for team in body.get("response", []):
+                for start in team.get("startXI", []):
+                    p = start.get("player", {})
+                    if p.get("name") and p.get("id"):
+                        players_map[p["name"]] = p["id"]
+                for sub in team.get("substitutes", []):
+                    p = sub.get("player", {})
+                    if p.get("name") and p.get("id"):
+                        players_map[p["name"]] = p["id"]
+    except Exception as exc:
+        log.warning("Failed to fetch fixture lineups for players map: %s", exc)
+    return players_map
+
+
 def interpret_query(
     raw_query: str,
     game: GameState,
-    aligned_events: list[AlignedEvent],
 ) -> HighlightQuery:
     """Interpret *raw_query* using OpenAI and return a structured HighlightQuery.
 
@@ -55,13 +93,11 @@ def interpret_query(
     if not OPENAI_API_KEY:
         raise QueryInterpreterError("OPENAI_API_KEY is not set — add it to your .env file")
 
-    players = sorted({e.player for e in aligned_events if e.player})
-    event_types_present = sorted({e.event_type.value for e in aligned_events})
+    players_map = _get_players_map(game.fixture_id)
 
     user_message = (
         f"Game: {game.home_team} vs {game.away_team} ({game.date})\n"
-        f"Available players: {', '.join(players) or 'none'}\n"
-        f"Event types in this match: {', '.join(event_types_present) or 'none'}\n\n"
+        f"Available players (Name->ID): {json.dumps(players_map)}\n\n"
         f"User query: {raw_query}"
     )
 
@@ -88,6 +124,9 @@ def interpret_query(
             query_type=query_type,
             event_types=event_types,
             player_name=data.get("player_name"),  # type: ignore[arg-type]
+            api_team_id=data.get("api_team_id"),  # type: ignore[arg-type]
+            api_player_id=data.get("api_player_id"),  # type: ignore[arg-type]
+            api_event_type=data.get("api_event_type"),  # type: ignore[arg-type]
             raw_query=raw_query,
         )
     except Exception as exc:

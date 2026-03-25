@@ -1,23 +1,16 @@
-"""Query REPL — pick an ingested game and generate highlights from natural language."""
+"""Query REPL — acts as a thin client to the Azure Backend API to generate highlights."""
 
 from __future__ import annotations
 
+import json
+import os
 import sys
-from pathlib import Path
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
-from config.settings import PIPELINE_WORKSPACE
-from models.events import AlignedEvent
-from models.game import GameState
-from pipeline.clip_builder import ClipBuilderError, build_highlights
-from pipeline.event_filter import filter_events
-from pipeline.query_interpreter import QueryInterpreterError, interpret_query
-from utils.game_registry import GameRegistry
-from utils.logger import setup_logging
-from utils.storage import LocalStorage, StorageBackend
-
-
-def _make_storage() -> LocalStorage:
-    return LocalStorage(root=PIPELINE_WORKSPACE)
+API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000").rstrip("/")
 
 
 def _prompt(msg: str, default: str = "") -> str:
@@ -29,24 +22,78 @@ def _prompt(msg: str, default: str = "") -> str:
     return value or default
 
 
-def _display_game_list(games: list[GameState]) -> None:
+def _display_game_list(matches: list[dict]) -> None:
     print()
-    for i, g in enumerate(games, 1):
-        print(f"  [{i}] {g.home_team} vs {g.away_team}  |  {g.league}  |  {g.date}")
+    for i, m in enumerate(matches, 1):
+        print(
+            f"  [{i}] {m['home_team']} vs {m['away_team']}  |  "
+            f"{m['competition']}  |  {m['season_label']}"
+        )
     print()
 
 
-def _load_aligned_events(game: GameState, storage: StorageBackend) -> list[AlignedEvent]:
-    data = storage.read_json(game.video_id, "aligned_events.json")
-    return [AlignedEvent.from_dict(e) for e in data.get("events", [])]
+def _get_matches() -> list[dict]:
+    url = f"{API_BASE_URL}/api/v1/matches"
+    try:
+        with urllib.request.urlopen(url) as response:
+            data = json.loads(response.read().decode())
+            return data.get("matches", [])
+    except Exception as e:
+        print(f"Error fetching matches from API: {e}", file=sys.stderr)
+        return []
 
 
-def _game_repl(game: GameState, storage: StorageBackend) -> None:
+def _submit_job(match_id: str, query: str) -> dict | None:
+    url = f"{API_BASE_URL}/api/v1/jobs"
+    payload = {"match_id": match_id, "highlights_query": query}
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req) as response:
+            return json.loads(response.read().decode())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()
+        print(f"  Error submitting job: {e.code} - {body}", file=sys.stderr)
+    except Exception as e:
+        print(f"  Error submitting job: {e}", file=sys.stderr)
+    return None
+
+
+def _poll_job(poll_url: str) -> None:
+    url = f"{API_BASE_URL}{poll_url}"
+    print("\n  Job queued. Waiting for worker to process on Azure...")
+    while True:
+        try:
+            with urllib.request.urlopen(url) as response:
+                job_data = json.loads(response.read().decode())
+                status = job_data.get("status")
+
+                if status == "completed":
+                    result = job_data.get("result", {})
+                    download_url = result.get("download_url")
+                    print(f"\n  Done! Download here: {download_url}")
+                    print(
+                        f"  Duration: {result.get('duration_seconds', 0)}s | "
+                        f"Clips: {result.get('clip_count', 0)}\n"
+                    )
+                    return
+                elif status == "failed":
+                    print(f"\n  Job failed: {job_data.get('error')}\n", file=sys.stderr)
+                    return
+                else:
+                    stage = job_data.get("progress", "processing")
+                    sys.stdout.write(f"\r  Status: {status} ({stage})".ljust(50))
+                    sys.stdout.flush()
+        except Exception as e:
+            print(f"\n  Error polling job: {e}", file=sys.stderr)
+            return
+        time.sleep(3)
+
+
+def _game_repl(match: dict) -> None:
     """Inner REPL for a chosen game. Returns when user types 'back'."""
-    print(f"\n  {game.home_team} vs {game.away_team} — {game.date}")
+    print(f"\n  {match['home_team']} vs {match['away_team']} — {match['season_label']}")
     print("  Type your highlights request, 'back' to pick another game, or 'quit'.\n")
-
-    aligned_events = _load_aligned_events(game, storage)
 
     while True:
         raw = _prompt("> ")
@@ -58,56 +105,37 @@ def _game_repl(game: GameState, storage: StorageBackend) -> None:
         if not raw:
             continue
 
-        try:
-            query = interpret_query(raw, game, aligned_events)
-        except QueryInterpreterError as exc:
-            print(f"  Error: {exc}", file=sys.stderr)
-            continue
-
-        print(f"  Understood: {query.query_type.value}", end="")
-        if query.event_types:
-            print(f" — {', '.join(et.value for et in query.event_types)}", end="")
-        if query.player_name:
-            print(f" — {query.player_name}", end="")
-        print()
-
-        filtered = filter_events(aligned_events, query)
-
-        try:
-            result = build_highlights(filtered, game, query, storage)
-        except ClipBuilderError as exc:
-            print(f"  Error building highlights: {exc}", file=sys.stderr)
-            continue
-
-        print(f"\n  Done! {Path(result['highlights_path']).name}")
-        print(f"    {result['clip_count']} clips | {result['total_duration_display']} total\n")
+        job_info = _submit_job(match["match_id"], raw)
+        if job_info:
+            if "status" in job_info and job_info["status"] == "completed":
+                print("\n  Job instantly found in cache!")
+                result = job_info.get("result", {})
+                print(f"  Done! Download here: {result.get('download_url')}\n")
+            else:
+                _poll_job(job_info["poll_url"])
 
 
 def run() -> None:
     """Main query REPL."""
-    setup_logging()
-    storage = _make_storage()
-    registry = GameRegistry(storage)
-
-    games = registry.list_ready()
-    if not games:
-        print("\n  No ingested games found.")
-        print("  Run 'python ingest.py' first to preprocess a match.\n")
-        return
-
-    print("\n  Football Highlights Generator")
+    print("\n  Football Highlights Client")
     print("  " + "-" * 34)
 
     while True:
-        _display_game_list(games)
-        pick = _prompt(f"  Pick a game [1-{len(games)}] or 'quit': ")
+        matches = _get_matches()
+        if not matches:
+            print("\n  No games found from API! Or API is unreachable.\n")
+            time.sleep(2)
+            continue
+
+        _display_game_list(matches)
+        pick = _prompt(f"  Pick a game [1-{len(matches)}] or 'quit': ")
         if pick.lower() in ("quit", "exit", "q"):
             print("Bye!")
             break
         try:
             idx = int(pick) - 1
-            if 0 <= idx < len(games):
-                _game_repl(games[idx], storage)
+            if 0 <= idx < len(matches):
+                _game_repl(matches[idx])
             else:
                 print("  Invalid choice.")
         except ValueError:

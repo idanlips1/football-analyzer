@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from catalog.loader import CatalogMatch, get_match
+from catalog.loader import CatalogMatch
 from utils.ffmpeg import FFprobeError, get_video_duration
 from utils.logger import get_logger
 from utils.storage import StorageBackend
@@ -57,95 +56,6 @@ def ensure_video_file_exists(storage: StorageBackend, metadata: dict[str, Any]) 
     return path
 
 
-def run_catalog_stages_to_game_json(
-    match_id: str,
-    storage: StorageBackend,
-    progress_callback: Any = None,
-    kickoff_first_override: float | None = None,
-    kickoff_second_override: float | None = None,
-    kickoff_fn: Callable[[float | None, float | None], tuple[float, float]] | None = None,
-) -> tuple[CatalogMatch, dict[str, Any], str]:
-    """Events → transcription → alignment → ``game.json`` (no clips)."""
-    entry = get_match(match_id)
-    if entry is None:
-        raise CatalogPipelineError(f"Unknown match_id: {match_id!r}")
-
-    if progress_callback:
-        progress_callback("loading_video")
-
-    metadata = merge_catalog_metadata(storage, entry)
-    ensure_video_file_exists(storage, metadata)
-
-    video_id = str(metadata["video_id"])
-
-    if progress_callback:
-        progress_callback("fetching_events")
-
-    from pipeline.match_events import fetch_match_events
-
-    match_events = fetch_match_events(metadata, storage)
-
-    if progress_callback:
-        progress_callback("transcribing")
-
-    from pipeline.transcription import transcribe
-
-    transcription = transcribe(metadata, storage)
-
-    if kickoff_fn is not None:
-        k_first, k_second = kickoff_fn(
-            transcription.get("kickoff_first_half"),
-            transcription.get("kickoff_second_half"),
-        )
-        kickoff_first: float | None = k_first
-        kickoff_second: float | None = k_second
-    else:
-        kickoff_first = (
-            kickoff_first_override
-            if kickoff_first_override is not None
-            else transcription.get("kickoff_first_half")
-        )
-        kickoff_second = (
-            kickoff_second_override
-            if kickoff_second_override is not None
-            else transcription.get("kickoff_second_half")
-        )
-
-    if kickoff_first is None or kickoff_second is None:
-        raise CatalogPipelineError(
-            "Could not auto-detect kickoff timestamps. "
-            "Re-submit with kickoff_first_half and kickoff_second_half overrides."
-        )
-    k1 = float(kickoff_first)
-    k2 = float(kickoff_second)
-
-    if progress_callback:
-        progress_callback("aligning")
-
-    from pipeline.event_aligner import align_events
-
-    align_events(match_events, metadata, storage, k1, k2)
-
-    from models.game import GameState
-
-    game = GameState(
-        video_id=video_id,
-        home_team=entry.home_team,
-        away_team=entry.away_team,
-        league=entry.competition,
-        date=entry.season_label,
-        fixture_id=int(metadata.get("fixture_id") or 0),
-        video_filename=metadata.get("video_filename", ""),
-        source=str(metadata.get("source", f"catalog:{video_id}")),
-        duration_seconds=float(metadata["duration_seconds"]),
-        kickoff_first_half=k1,
-        kickoff_second_half=k2,
-    )
-    storage.write_json(video_id, "game.json", game.to_dict())
-
-    return entry, metadata, video_id
-
-
 def run_catalog_pipeline(
     match_id: str,
     highlights_query: str,
@@ -154,38 +64,64 @@ def run_catalog_pipeline(
     kickoff_first_override: float | None = None,
     kickoff_second_override: float | None = None,
 ) -> dict[str, Any]:
-    """Stages 2–5: events → transcription → alignment → clips for a catalog match."""
-    _entry, _metadata, video_id = run_catalog_stages_to_game_json(
-        match_id,
-        storage,
-        progress_callback=progress_callback,
-        kickoff_first_override=kickoff_first_override,
-        kickoff_second_override=kickoff_second_override,
-        kickoff_fn=None,
-    )
+    """Execute query-time pipeline: NLP interpretation → dynamic events → alignment → clips."""
 
     if progress_callback:
-        progress_callback("building_clips")
+        progress_callback("interpreting_query")
 
     from models.events import AlignedEvent
     from models.game import GameState
     from models.highlight_query import HighlightQuery, QueryType
     from pipeline.clip_builder import build_highlights
+    from pipeline.event_aligner import align_events
     from pipeline.event_filter import filter_events
+    from pipeline.match_events import fetch_filtered_events
+    from pipeline.query_interpreter import interpret_query
 
-    game = GameState.from_dict(storage.read_json(video_id, "game.json"))
-
-    aligned_data = storage.read_json(video_id, "aligned_events.json")
-    aligned_events = [AlignedEvent.from_dict(e) for e in aligned_data.get("events", [])]
-
+    # Load game data prepared during Ingestion Stage
     try:
-        from pipeline.query_interpreter import interpret_query
+        game = GameState.from_dict(storage.read_json(match_id, "game.json"))
+        metadata = storage.read_json(match_id, "metadata.json")
+    except Exception as exc:
+        raise CatalogPipelineError(
+            f"Missing ingestion data for {match_id}. Run ingestion first."
+        ) from exc
 
-        hq = interpret_query(highlights_query, game, aligned_events)
-    except Exception:  # noqa: BLE001
+    # 1. Interpret NLP Query
+    try:
+        hq = interpret_query(highlights_query, game)
+    except Exception as exc:
+        log.warning("Interpreter failed: %s", exc)
         hq = HighlightQuery(query_type=QueryType.FULL_SUMMARY, raw_query=highlights_query)
 
+    if progress_callback:
+        progress_callback("fetching_dynamic_events")
+
+    # 2. Fetch specific events dynamically
+    events_data = fetch_filtered_events(metadata, hq)
+
+    if progress_callback:
+        progress_callback("aligning")
+
+    # 3. Align these dynamically fetched events against the transcription
+    aligned_data = align_events(
+        events_data,
+        metadata,
+        storage,
+        game.kickoff_first_half,
+        game.kickoff_second_half,
+        force_recompute=True,
+        save_to_disk=False,
+    )
+    aligned_events = [AlignedEvent.from_dict(e) for e in aligned_data.get("events", [])]
+
+    if progress_callback:
+        progress_callback("building_clips")
+
+    # 4. Local fallback filtering
     filtered = filter_events(aligned_events, hq)
+
+    # 5. Build final clips
     result = build_highlights(
         filtered,
         game,
@@ -193,5 +129,5 @@ def run_catalog_pipeline(
         storage,
         confirm_overwrite_fn=lambda _path: False,
     )
-    result["video_id"] = video_id
+    result["video_id"] = match_id
     return result

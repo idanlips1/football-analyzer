@@ -20,10 +20,8 @@ from config.settings import (
     PIPELINE_WORKSPACE,
     STORAGE_BACKEND,
 )
-from pipeline.catalog_pipeline import CatalogPipelineError, run_catalog_stages_to_game_json
-from pipeline.event_aligner import EventAlignerError
+from pipeline.catalog_pipeline import CatalogPipelineError
 from pipeline.ingestion import IngestionError, ingest_local_catalog_match
-from pipeline.match_events import MatchEventsError
 from pipeline.transcription import TranscriptionError
 from utils.logger import setup_logging
 from utils.storage import BlobStorage, LocalStorage, StorageBackend
@@ -126,23 +124,65 @@ def _run_catalog_ingest(
     *,
     confirm_kickoffs_fn: ConfirmKickoffsFn = _confirm_kickoffs_interactive,
 ) -> None:
-    path_raw = input("  Path to local full-match .mp4: ").strip()
+    path_raw = input("  Path to local full-match .mp4 or YouTube URL: ").strip()
     if not path_raw:
         print("  No path given.")
         return
-    video_path = Path(path_raw).expanduser()
 
-    print("\n[1/4] Copying video into workspace…")
-    ingest_local_catalog_match(match_id, video_path, storage)
+    # 1. Download/Upload video
+    if path_raw.startswith("http://") or path_raw.startswith("https://"):
+        print("\n[1/3] Downloading from YouTube (yt-dlp)…")
+        import tempfile
 
-    print("\n[2/4] Fetching events, transcribing, aligning (this may take a while)…")
-    run_catalog_stages_to_game_json(
-        match_id,
-        storage,
-        progress_callback=lambda s: print(f"       … {s}"),
-        kickoff_fn=confirm_kickoffs_fn,
+        from scripts.upload_catalog_match import _download_youtube
+
+        with tempfile.TemporaryDirectory() as td:
+            work = Path(td)
+            video_path = _download_youtube(path_raw, work)
+            print("\n      Copying video into workspace/Azure…")
+            metadata = ingest_local_catalog_match(match_id, video_path, storage)
+    else:
+        video_path = Path(path_raw).expanduser()
+        print("\n[1/3] Copying video into workspace/Azure…")
+        metadata = ingest_local_catalog_match(match_id, video_path, storage)
+
+    # 2. Transcribe
+    print("\n[2/3] Transcribing with AssemblyAI (this may take a while)…")
+    from pipeline.transcription import transcribe
+
+    transcription = transcribe(metadata, storage)
+
+    # 3. Game JSON
+    print("\n[3/3] Confirming kickoffs and creating game.json…")
+    k_first, k_second = confirm_kickoffs_fn(
+        transcription.get("kickoff_first_half"),
+        transcription.get("kickoff_second_half"),
     )
-    print("\n  Done — game.json written. You can run the pipeline or API worker next.\n")
+
+    if k_first is None or k_second is None:
+        raise CatalogPipelineError("Could not confirm kickoff timestamps.")
+
+    from models.game import GameState
+
+    game = GameState(
+        video_id=match_id,
+        home_team=metadata["home_team"],
+        away_team=metadata["away_team"],
+        league=metadata["competition"],
+        date=metadata["season_label"],
+        fixture_id=int(metadata.get("fixture_id") or 0),
+        video_filename=metadata.get("video_filename", "match.mp4"),
+        source=str(metadata.get("source", f"catalog:{match_id}")),
+        duration_seconds=float(metadata["duration_seconds"]),
+        kickoff_first_half=float(k_first),
+        kickoff_second_half=float(k_second),
+    )
+    storage.write_json(match_id, "game.json", game.to_dict())
+
+    print(
+        "\n  Done — game.json and transcription.json written. "
+        "You can now use the User CLI to query this game.\n"
+    )
 
 
 def run() -> None:
@@ -166,9 +206,7 @@ def run() -> None:
     except (
         IngestionError,
         CatalogPipelineError,
-        MatchEventsError,
         TranscriptionError,
-        EventAlignerError,
     ) as exc:
         print(f"\n  Error: {exc}\n", file=sys.stderr)
 

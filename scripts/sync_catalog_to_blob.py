@@ -4,7 +4,8 @@
 Requires: pip install -r requirements-tools.txt, ffmpeg, az CLI (optional) for connection string.
 
 Environment:
-  AZURE_STORAGE_CONNECTION_STRING — or set AZURE_STORAGE_ACCOUNT + AZURE_RESOURCE_GROUP for ``az`` lookup.
+  AZURE_STORAGE_CONNECTION_STRING — or set AZURE_STORAGE_ACCOUNT
+  and AZURE_RESOURCE_GROUP for ``az`` lookup.
 """
 
 from __future__ import annotations
@@ -27,10 +28,10 @@ SEARCHES: dict[str, str] = {
     "istanbul-2005": "Liverpool AC Milan 2005 UEFA Champions League final full match",
     "barcelona-psg-2017": "Barcelona PSG 6-1 2017 Champions League full match",
     "germany-brazil-2014": "Brazil Germany 7-1 2014 FIFA World Cup semi final full match",
-    "liverpool-barcelona-2019": "Liverpool Barcelona 4-0 2019 Champions League semi final full match",
+    "liverpool-barcelona-2019": "Liverpool Barcelona 4-0 2019 Champions League semi final full match",  # noqa: E501
     "argentina-france-2022": "Argentina France 2022 FIFA World Cup final full match",
     "tottenham-ajax-2019": "Tottenham Ajax 2019 Champions League semi final second leg full match",
-    "real-madrid-man-city-2022": "Real Madrid Manchester City 2022 Champions League semi final full match",
+    "real-madrid-man-city-2022": "Real Madrid Manchester City 2022 Champions League semi final full match",  # noqa: E501
     "chelsea-bayern-2012": "Chelsea Bayern Munich 2012 Champions League final full match",
     "ajax-real-madrid-2019": "Ajax Real Madrid 4-1 2019 Champions League full match",
     "leicester-qpr-2014": "Leicester QPR 2015 Premier League final day full match",
@@ -86,7 +87,7 @@ def _pick_video_url(query: str) -> tuple[str, str, int]:
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(f"ytsearch12:{query}", download=False)
     entries = [e for e in (info.get("entries") or []) if e]
-    scored: list[tuple[ float, str, str, int]] = []
+    scored: list[tuple[float, str, str, int]] = []
     for e in entries:
         vid = e.get("id") or ""
         title = e.get("title") or ""

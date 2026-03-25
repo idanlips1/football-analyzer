@@ -21,6 +21,7 @@ class StorageBackend(Protocol):
     # download the blob to a temp file first and return that path.
     def workspace_path(self, video_id: str) -> Path: ...
     def list_games(self) -> list[str]: ...
+    def upload_file(self, video_id: str, filename: str, local_path: Path) -> None: ...
 
 
 class LocalStorage:
@@ -60,8 +61,15 @@ class LocalStorage:
         return [
             d.name
             for d in sorted(self._root.iterdir())
-            if d.is_dir() and (d / "game.json").exists() and (d / "aligned_events.json").exists()
+            if d.is_dir() and (d / "game.json").exists()
         ]
+
+    def upload_file(self, video_id: str, filename: str, local_path: Path) -> None:
+        dest = self.local_path(video_id, filename)
+        if local_path.resolve() != dest.resolve():
+            import shutil
+
+            shutil.copy2(local_path, dest)
 
 
 class BlobStorage:
@@ -160,11 +168,22 @@ class BlobStorage:
             if len(parts) == 2:
                 vid, fname = parts
                 files_by_video.setdefault(vid, set()).add(fname)
-        return sorted(
-            vid
-            for vid, files in files_by_video.items()
-            if "game.json" in files and "aligned_events.json" in files
-        )
+        return sorted(vid for vid, files in files_by_video.items() if "game.json" in files)
+
+    def upload_file(self, video_id: str, filename: str, local_path: Path) -> None:
+        container_name = self._container_for_file(filename)
+        container = self._client.get_container_client(container_name)
+        blob_name = f"{video_id}/{filename}"
+        with open(local_path, "rb") as f:
+            container.upload_blob(blob_name, f, overwrite=True)
+
+        # Write locally as well to cache it
+        local = self._temp_root / video_id / filename
+        local.parent.mkdir(parents=True, exist_ok=True)
+        if local_path.resolve() != local.resolve():
+            import shutil
+
+            shutil.copy2(local_path, local)
 
     def upload_highlights(self, video_id: str, query_hash: str, local_file: Path) -> str:
         """Upload a highlights file and return the blob name."""
@@ -194,7 +213,9 @@ class BlobStorage:
             permission=BlobSasPermissions(read=True),
             expiry=datetime.now(UTC) + timedelta(hours=expiry_hours),
         )
-        return f"https://{account_name}.blob.core.windows.net/{container_name}/{blob_name}?{sas_token}"
+        return (
+            f"https://{account_name}.blob.core.windows.net/{container_name}/{blob_name}?{sas_token}"
+        )
 
     def cleanup_temp(self, video_id: str) -> None:
         """Remove temp directory for a video_id."""

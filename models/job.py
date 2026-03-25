@@ -43,9 +43,7 @@ class Job:
     result: JobResult | None = None
     error: str | None = None
     webhook_url: str | None = None
-    created_at: str = field(
-        default_factory=lambda: datetime.now(UTC).isoformat()
-    )
+    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
     def to_dict(self) -> dict[str, Any]:
         d = dataclasses.asdict(self)
