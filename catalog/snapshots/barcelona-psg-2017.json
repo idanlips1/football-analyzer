@@ -1,0 +1,73 @@
+{
+  "video_id": "barcelona-psg-2017",
+  "fixture_id": 0,
+  "event_count": 6,
+  "events": [
+    {
+      "minute": 3,
+      "extra_minute": null,
+      "half": "1st Half",
+      "event_type": "goal",
+      "team": "Barcelona",
+      "player": "Suarez",
+      "assist": null,
+      "score": "1 - 0",
+      "detail": "Normal Goal"
+    },
+    {
+      "minute": 40,
+      "extra_minute": null,
+      "half": "1st Half",
+      "event_type": "goal",
+      "team": "Barcelona",
+      "player": "Own Goal",
+      "assist": null,
+      "score": "2 - 0",
+      "detail": "Normal Goal"
+    },
+    {
+      "minute": 50,
+      "extra_minute": null,
+      "half": "2nd Half",
+      "event_type": "goal",
+      "team": "Barcelona",
+      "player": "Messi",
+      "assist": null,
+      "score": "3 - 0",
+      "detail": "Normal Goal"
+    },
+    {
+      "minute": 62,
+      "extra_minute": null,
+      "half": "2nd Half",
+      "event_type": "goal",
+      "team": "Barcelona",
+      "player": "Neymar",
+      "assist": null,
+      "score": "4 - 0",
+      "detail": "Normal Goal"
+    },
+    {
+      "minute": 88,
+      "extra_minute": null,
+      "half": "2nd Half",
+      "event_type": "goal",
+      "team": "Barcelona",
+      "player": "Neymar",
+      "assist": null,
+      "score": "5 - 1",
+      "detail": "Normal Goal"
+    },
+    {
+      "minute": 90,
+      "extra_minute": null,
+      "half": "2nd Half",
+      "event_type": "goal",
+      "team": "Barcelona",
+      "player": "Sergi Roberto",
+      "assist": null,
+      "score": "6 - 1",
+      "detail": "Normal Goal"
+    }
+  ]
+}

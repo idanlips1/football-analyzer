@@ -1,0 +1,5 @@
+# Optional: one-off catalog ingestion (download + upload to Azure Blob).
+#   pip install -r requirements-tools.txt
+yt-dlp
+azure-storage-blob
+python-dotenv

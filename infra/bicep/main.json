@@ -1,0 +1,430 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.41.2.15936",
+      "templateHash": "17154395822649041100"
+    }
+  },
+  "parameters": {
+    "baseName": {
+      "type": "string",
+      "defaultValue": "football-hl",
+      "metadata": {
+        "description": "Base name for all resources"
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Location for all resources"
+      }
+    },
+    "containerImage": {
+      "type": "string",
+      "metadata": {
+        "description": "Container image for API and Worker"
+      }
+    },
+    "keyVaultName": {
+      "type": "string",
+      "metadata": {
+        "description": "Existing Azure Key Vault name containing app secrets"
+      }
+    }
+  },
+  "variables": {
+    "sharedEnv": [
+      {
+        "name": "STORAGE_BACKEND",
+        "value": "azure"
+      },
+      {
+        "name": "AZURE_STORAGE_CONNECTION_STRING",
+        "secretRef": "storage-conn"
+      },
+      {
+        "name": "ASSEMBLYAI_API_KEY",
+        "secretRef": "assemblyai-key"
+      },
+      {
+        "name": "API_FOOTBALL_KEY",
+        "secretRef": "api-football-key"
+      },
+      {
+        "name": "OPENAI_API_KEY",
+        "secretRef": "openai-key"
+      },
+      {
+        "name": "API_KEYS",
+        "secretRef": "api-keys"
+      }
+    ],
+    "acrPullRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')]",
+    "kvSecretsUserRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}storage', replace(parameters('baseName'), '-', ''))]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "StorageV2",
+      "properties": {
+        "minimumTlsVersion": "TLS1_2"
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/default/videos', format('{0}storage', replace(parameters('baseName'), '-', '')))]",
+      "properties": {
+        "publicAccess": "None"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', format('{0}storage', replace(parameters('baseName'), '-', '')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/default/pipeline', format('{0}storage', replace(parameters('baseName'), '-', '')))]",
+      "properties": {
+        "publicAccess": "None"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', format('{0}storage', replace(parameters('baseName'), '-', '')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/default/highlights', format('{0}storage', replace(parameters('baseName'), '-', '')))]",
+      "properties": {
+        "publicAccess": "None"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', format('{0}storage', replace(parameters('baseName'), '-', '')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/queueServices",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/default', format('{0}storage', replace(parameters('baseName'), '-', '')))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', format('{0}storage', replace(parameters('baseName'), '-', '')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/queueServices/queues",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/default/job-queue', format('{0}storage', replace(parameters('baseName'), '-', '')))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/queueServices', split(format('{0}/default', format('{0}storage', replace(parameters('baseName'), '-', ''))), '/')[0], split(format('{0}/default', format('{0}storage', replace(parameters('baseName'), '-', ''))), '/')[1])]",
+        "[resourceId('Microsoft.Storage/storageAccounts', format('{0}storage', replace(parameters('baseName'), '-', '')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/tableServices",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/default', format('{0}storage', replace(parameters('baseName'), '-', '')))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', format('{0}storage', replace(parameters('baseName'), '-', '')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/tableServices/tables",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/default/jobs', format('{0}storage', replace(parameters('baseName'), '-', '')))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', format('{0}storage', replace(parameters('baseName'), '-', '')))]",
+        "[resourceId('Microsoft.Storage/storageAccounts/tableServices', split(format('{0}/default', format('{0}storage', replace(parameters('baseName'), '-', ''))), '/')[0], split(format('{0}/default', format('{0}storage', replace(parameters('baseName'), '-', ''))), '/')[1])]"
+      ]
+    },
+    {
+      "type": "Microsoft.ContainerRegistry/registries",
+      "apiVersion": "2023-07-01",
+      "name": "[format('{0}acr', replace(parameters('baseName'), '-', ''))]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Basic"
+      },
+      "properties": {
+        "adminUserEnabled": true
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces",
+      "apiVersion": "2023-09-01",
+      "name": "[format('{0}-logs', parameters('baseName'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "sku": {
+          "name": "PerGB2018"
+        },
+        "retentionInDays": 30
+      }
+    },
+    {
+      "type": "Microsoft.App/managedEnvironments",
+      "apiVersion": "2024-03-01",
+      "name": "[format('{0}-env', parameters('baseName'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "appLogsConfiguration": {
+          "destination": "log-analytics",
+          "logAnalyticsConfiguration": {
+            "customerId": "[reference(resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-logs', parameters('baseName'))), '2023-09-01').customerId]",
+            "sharedKey": "[listKeys(resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-logs', parameters('baseName'))), '2023-09-01').primarySharedKey]"
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-logs', parameters('baseName')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2024-03-01",
+      "name": "[format('{0}-api', parameters('baseName'))]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', format('{0}-env', parameters('baseName')))]",
+        "configuration": {
+          "ingress": {
+            "external": true,
+            "targetPort": 8000,
+            "transport": "http"
+          },
+          "secrets": [
+            {
+              "name": "storage-conn",
+              "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};AccountKey={1};EndpointSuffix=core.windows.net', format('{0}storage', replace(parameters('baseName'), '-', '')), listKeys(resourceId('Microsoft.Storage/storageAccounts', format('{0}storage', replace(parameters('baseName'), '-', ''))), '2023-05-01').keys[0].value)]"
+            },
+            {
+              "name": "assemblyai-key",
+              "keyVaultUrl": "[format('https://{0}.vault.azure.net/secrets/assemblyai-api-key', parameters('keyVaultName'))]",
+              "identity": "system"
+            },
+            {
+              "name": "api-football-key",
+              "keyVaultUrl": "[format('https://{0}.vault.azure.net/secrets/api-football-key', parameters('keyVaultName'))]",
+              "identity": "system"
+            },
+            {
+              "name": "openai-key",
+              "keyVaultUrl": "[format('https://{0}.vault.azure.net/secrets/openai-api-key', parameters('keyVaultName'))]",
+              "identity": "system"
+            },
+            {
+              "name": "api-keys",
+              "keyVaultUrl": "[format('https://{0}.vault.azure.net/secrets/api-keys', parameters('keyVaultName'))]",
+              "identity": "system"
+            },
+            {
+              "name": "acr-password",
+              "value": "[listCredentials(resourceId('Microsoft.ContainerRegistry/registries', format('{0}acr', replace(parameters('baseName'), '-', ''))), '2023-07-01').passwords[0].value]"
+            }
+          ],
+          "registries": [
+            {
+              "server": "[reference(resourceId('Microsoft.ContainerRegistry/registries', format('{0}acr', replace(parameters('baseName'), '-', ''))), '2023-07-01').loginServer]",
+              "username": "[listCredentials(resourceId('Microsoft.ContainerRegistry/registries', format('{0}acr', replace(parameters('baseName'), '-', ''))), '2023-07-01').username]",
+              "passwordSecretRef": "acr-password"
+            }
+          ]
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "api",
+              "image": "[parameters('containerImage')]",
+              "resources": {
+                "cpu": "[json('0.25')]",
+                "memory": "0.5Gi"
+              },
+              "env": "[variables('sharedEnv')]"
+            }
+          ],
+          "scale": {
+            "minReplicas": 1,
+            "maxReplicas": 1
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.App/managedEnvironments', format('{0}-env', parameters('baseName')))]",
+        "[resourceId('Microsoft.ContainerRegistry/registries', format('{0}acr', replace(parameters('baseName'), '-', '')))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', format('{0}storage', replace(parameters('baseName'), '-', '')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2024-03-01",
+      "name": "[format('{0}-worker', parameters('baseName'))]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', format('{0}-env', parameters('baseName')))]",
+        "configuration": {
+          "secrets": [
+            {
+              "name": "storage-conn",
+              "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};AccountKey={1};EndpointSuffix=core.windows.net', format('{0}storage', replace(parameters('baseName'), '-', '')), listKeys(resourceId('Microsoft.Storage/storageAccounts', format('{0}storage', replace(parameters('baseName'), '-', ''))), '2023-05-01').keys[0].value)]"
+            },
+            {
+              "name": "assemblyai-key",
+              "keyVaultUrl": "[format('https://{0}.vault.azure.net/secrets/assemblyai-api-key', parameters('keyVaultName'))]",
+              "identity": "system"
+            },
+            {
+              "name": "api-football-key",
+              "keyVaultUrl": "[format('https://{0}.vault.azure.net/secrets/api-football-key', parameters('keyVaultName'))]",
+              "identity": "system"
+            },
+            {
+              "name": "openai-key",
+              "keyVaultUrl": "[format('https://{0}.vault.azure.net/secrets/openai-api-key', parameters('keyVaultName'))]",
+              "identity": "system"
+            },
+            {
+              "name": "api-keys",
+              "keyVaultUrl": "[format('https://{0}.vault.azure.net/secrets/api-keys', parameters('keyVaultName'))]",
+              "identity": "system"
+            },
+            {
+              "name": "acr-password",
+              "value": "[listCredentials(resourceId('Microsoft.ContainerRegistry/registries', format('{0}acr', replace(parameters('baseName'), '-', ''))), '2023-07-01').passwords[0].value]"
+            }
+          ],
+          "registries": [
+            {
+              "server": "[reference(resourceId('Microsoft.ContainerRegistry/registries', format('{0}acr', replace(parameters('baseName'), '-', ''))), '2023-07-01').loginServer]",
+              "username": "[listCredentials(resourceId('Microsoft.ContainerRegistry/registries', format('{0}acr', replace(parameters('baseName'), '-', ''))), '2023-07-01').username]",
+              "passwordSecretRef": "acr-password"
+            }
+          ]
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "worker",
+              "image": "[parameters('containerImage')]",
+              "command": [
+                "python",
+                "-m",
+                "worker"
+              ],
+              "resources": {
+                "cpu": "[json('2.0')]",
+                "memory": "4Gi",
+                "ephemeralStorage": "20Gi"
+              },
+              "env": "[variables('sharedEnv')]",
+              "volumeMounts": [
+                {
+                  "volumeName": "tmp",
+                  "mountPath": "/tmp/football-analyzer"
+                }
+              ]
+            }
+          ],
+          "volumes": [
+            {
+              "name": "tmp",
+              "storageType": "EmptyDir"
+            }
+          ],
+          "scale": {
+            "minReplicas": 1,
+            "maxReplicas": 1
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.App/managedEnvironments', format('{0}-env', parameters('baseName')))]",
+        "[resourceId('Microsoft.ContainerRegistry/registries', format('{0}acr', replace(parameters('baseName'), '-', '')))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', format('{0}storage', replace(parameters('baseName'), '-', '')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.ContainerRegistry/registries', format('{0}acr', replace(parameters('baseName'), '-', '')))]",
+      "name": "[guid(resourceId('Microsoft.ContainerRegistry/registries', format('{0}acr', replace(parameters('baseName'), '-', ''))), resourceId('Microsoft.App/containerApps', format('{0}-api', parameters('baseName'))), variables('acrPullRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[variables('acrPullRoleId')]",
+        "principalId": "[reference(resourceId('Microsoft.App/containerApps', format('{0}-api', parameters('baseName'))), '2024-03-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ContainerRegistry/registries', format('{0}acr', replace(parameters('baseName'), '-', '')))]",
+        "[resourceId('Microsoft.App/containerApps', format('{0}-api', parameters('baseName')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.ContainerRegistry/registries', format('{0}acr', replace(parameters('baseName'), '-', '')))]",
+      "name": "[guid(resourceId('Microsoft.ContainerRegistry/registries', format('{0}acr', replace(parameters('baseName'), '-', ''))), resourceId('Microsoft.App/containerApps', format('{0}-worker', parameters('baseName'))), variables('acrPullRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[variables('acrPullRoleId')]",
+        "principalId": "[reference(resourceId('Microsoft.App/containerApps', format('{0}-worker', parameters('baseName'))), '2024-03-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.ContainerRegistry/registries', format('{0}acr', replace(parameters('baseName'), '-', '')))]",
+        "[resourceId('Microsoft.App/containerApps', format('{0}-worker', parameters('baseName')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
+      "name": "[guid(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), resourceId('Microsoft.App/containerApps', format('{0}-api', parameters('baseName'))), variables('kvSecretsUserRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[variables('kvSecretsUserRoleId')]",
+        "principalId": "[reference(resourceId('Microsoft.App/containerApps', format('{0}-api', parameters('baseName'))), '2024-03-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.App/containerApps', format('{0}-api', parameters('baseName')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]",
+      "name": "[guid(resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName')), resourceId('Microsoft.App/containerApps', format('{0}-worker', parameters('baseName'))), variables('kvSecretsUserRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[variables('kvSecretsUserRoleId')]",
+        "principalId": "[reference(resourceId('Microsoft.App/containerApps', format('{0}-worker', parameters('baseName'))), '2024-03-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.App/containerApps', format('{0}-worker', parameters('baseName')))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "apiUrl": {
+      "type": "string",
+      "value": "[format('https://{0}', reference(resourceId('Microsoft.App/containerApps', format('{0}-api', parameters('baseName'))), '2024-03-01').configuration.ingress.fqdn)]"
+    },
+    "acrLoginServer": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.ContainerRegistry/registries', format('{0}acr', replace(parameters('baseName'), '-', ''))), '2023-07-01').loginServer]"
+    }
+  }
+}

@@ -1,17 +1,21 @@
-"""Stage 1 — Video ingestion: download a YouTube video and save it to the
-workspace folder with basic metadata."""
+"""Stage 1 — Place a local match video in storage for a catalog match_id.
+
+Production video acquisition uses Azure Blob + :mod:`pipeline.catalog_pipeline`.
+Use :func:`ingest_local_catalog_match` for local runs; operators upload with
+``scripts/upload_catalog_match.py`` (optional yt-dlp on the operator machine only).
+"""
 
 from __future__ import annotations
 
-import json
+import shutil
 from pathlib import Path
 from typing import Any
 
-import yt_dlp
-
+from catalog.loader import get_match
 from config.settings import MIN_DURATION_SECONDS, PIPELINE_WORKSPACE
 from utils.ffmpeg import FFprobeError, get_video_duration
 from utils.logger import get_logger
+from utils.storage import StorageBackend
 
 log = get_logger(__name__)
 
@@ -44,36 +48,34 @@ def validate_duration(
         )
 
 
-def ingest(
-    url: str,
+def ingest_local_catalog_match(
+    match_id: str,
+    source_mp4: Path,
+    storage: StorageBackend,
     *,
     skip_duration_check: bool = False,
 ) -> dict[str, Any]:
-    """Run Stage 1 of the pipeline.
+    """Copy a local ``.mp4`` into storage as ``<match_id>/match.mp4`` and write metadata.
 
-    1. Use yt-dlp to extract the video ID and download the video.
-    2. Save it to ``pipeline_workspace/<video_id>/``.
-    3. Probe the duration with ffprobe and validate it.
-    4. Write ``metadata.json`` and return the metadata dict.
-
-    If ``metadata.json`` already exists the stage is skipped (cache hit).
+    ``match_id`` must exist in the curated catalog (``catalog/data/matches.json``).
     """
-    video_id = _extract_video_id(url)
-    workspace = PIPELINE_WORKSPACE / video_id
-    metadata_path = workspace / METADATA_FILENAME
+    entry = get_match(match_id)
+    if entry is None:
+        raise IngestionError(f"Unknown match_id: {match_id!r}")
 
-    if metadata_path.exists():
-        log.info("Stage 1 cache hit — loading existing metadata for %s", video_id)
-        cached: dict[str, Any] = json.loads(metadata_path.read_text())
-        return cached
+    src = source_mp4.expanduser().resolve()
+    if not src.is_file():
+        raise IngestionError(f"Not a file: {src}")
+    if src.suffix.lower() != ".mp4":
+        raise IngestionError("Source must be a .mp4 file")
 
-    log.info("Stage 1 — ingesting video (id=%s)", video_id)
-    workspace.mkdir(parents=True, exist_ok=True)
-
-    video_path = _download_video(url, workspace)
+    video_id = entry.match_id
+    storage.workspace_path(video_id)
+    dest = storage.local_path(video_id, "match.mp4")
+    shutil.copy2(src, dest)
 
     try:
-        duration = get_video_duration(video_path)
+        duration = get_video_duration(dest)
     except FFprobeError as exc:
         raise IngestionError(str(exc)) from exc
 
@@ -81,58 +83,23 @@ def ingest(
 
     metadata: dict[str, Any] = {
         "video_id": video_id,
-        "source": url,
-        "video_filename": video_path.name,
+        "source": f"catalog:{video_id}",
+        "video_filename": "match.mp4",
         "duration_seconds": duration,
-        "workspace": str(workspace),
+        "events_snapshot": entry.events_snapshot,
+        "fixture_id": entry.fixture_id,
+        "home_team": entry.home_team,
+        "away_team": entry.away_team,
+        "competition": entry.competition,
+        "season_label": entry.season_label,
     }
-
-    metadata_path.write_text(json.dumps(metadata, indent=2))
-    log.info("Stage 1 complete — metadata saved to %s", metadata_path)
+    storage.write_json(video_id, "metadata.json", metadata)
+    log.info("Stage 1 complete — %s → %s", src, dest)
     return metadata
 
 
-# ── Private helpers ─────────────────────────────────────────────────────────
+def default_workspace_storage() -> StorageBackend:
+    """Local storage rooted at :data:`config.settings.PIPELINE_WORKSPACE`."""
+    from utils.storage import LocalStorage
 
-
-def _extract_video_id(url: str) -> str:
-    """Ask yt-dlp for the video ID without downloading anything."""
-    try:
-        with yt_dlp.YoutubeDL({"quiet": True}) as ydl:
-            info = ydl.extract_info(url, download=False)
-            video_id: str = info["id"]  # type: ignore[index]
-            return video_id
-    except Exception as exc:
-        raise IngestionError(f"Could not extract video ID from URL: {exc}") from exc
-
-
-def _download_video(url: str, workspace: Path) -> Path:
-    """Download a YouTube video into *workspace* using yt-dlp.
-
-    Returns the path to the downloaded file.
-    """
-    log.info("Downloading: %s", url)
-    output_template = str(workspace / "%(title)s.%(ext)s")
-    ydl_opts: dict[str, Any] = {
-        "outtmpl": output_template,
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-        "merge_output_format": "mp4",
-        "quiet": True,
-        "no_warnings": True,
-    }
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
-    except yt_dlp.utils.DownloadError as exc:
-        raise IngestionError(f"yt-dlp download failed: {exc}") from exc
-
-    video_path = Path(filename)
-    if not video_path.exists():
-        video_path = video_path.with_suffix(".mp4")
-
-    if not video_path.exists():
-        raise IngestionError(f"Download appeared to succeed but file not found at {video_path}")
-
-    log.info("Downloaded to %s", video_path)
-    return video_path
+    return LocalStorage(root=PIPELINE_WORKSPACE)

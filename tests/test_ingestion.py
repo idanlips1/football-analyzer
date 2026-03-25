@@ -1,19 +1,19 @@
-"""Tests for Stage 1 — video ingestion and metadata validation."""
+"""Tests for Stage 1 — local catalog video copy and metadata validation."""
 
 from __future__ import annotations
 
 import json
 from collections.abc import Callable
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
 from pipeline.ingestion import (
     IngestionError,
-    ingest,
+    ingest_local_catalog_match,
     validate_duration,
 )
+from utils.storage import LocalStorage
 
 # ── Duration validation ────────────────────────────────────────────────────
 
@@ -38,118 +38,82 @@ class TestValidateDuration:
         validate_duration(200.0, min_duration=200.0)
 
 
-# ── Full ingestion flow ────────────────────────────────────────────────────
+# ── ingest_local_catalog_match ─────────────────────────────────────────────
 
 
-class TestIngest:
-    """Tests for the ingest() function.
-
-    We mock _extract_video_id and _download_video so these tests don't
-    hit the network — they verify the orchestration logic (caching,
-    duration gating, metadata persistence).
-    """
+class TestIngestLocalCatalogMatch:
+    """Copy + metadata; ffprobe mocked."""
 
     @staticmethod
-    def _fake_download(workspace: Path) -> Path:
-        """Simulate a downloaded file landing in the workspace."""
-        video = workspace / "fake_match.mp4"
-        video.write_bytes(b"\x00" * 512)
-        return video
+    def _src_mp4(tmp_path: Path) -> Path:
+        p = tmp_path / "in.mp4"
+        p.write_bytes(b"\x00" * 512)
+        return p
 
-    @patch("pipeline.ingestion._extract_video_id", return_value="abc123")
     def test_saves_metadata_and_video(
         self,
-        _mock_id: MagicMock,
-        tmp_workspace: Path,
+        tmp_path: Path,
         fake_ffprobe_duration: Callable[[float], None],
     ) -> None:
         fake_ffprobe_duration(5400.0)
-        ws = tmp_workspace / "abc123"
+        storage = LocalStorage(root=tmp_path / "ws")
+        src = self._src_mp4(tmp_path)
 
-        with patch(
-            "pipeline.ingestion._download_video",
-            side_effect=lambda _url, w: self._fake_download(w),
-        ):
-            metadata = ingest("https://www.youtube.com/watch?v=abc123")
+        meta = ingest_local_catalog_match("istanbul-2005", src, storage)
 
-        assert metadata["video_id"] == "abc123"
-        assert metadata["duration_seconds"] == 5400.0
-        assert (ws / "metadata.json").exists()
-        assert (ws / "fake_match.mp4").exists()
+        assert meta["video_id"] == "istanbul-2005"
+        assert meta["duration_seconds"] == 5400.0
+        assert storage.local_path("istanbul-2005", "metadata.json").exists()
+        assert storage.local_path("istanbul-2005", "match.mp4").exists()
 
-    @patch("pipeline.ingestion._extract_video_id", return_value="abc123")
-    def test_cache_hit_skips_download(
-        self,
-        _mock_id: MagicMock,
-        tmp_workspace: Path,
-        fake_ffprobe_duration: Callable[[float], None],
-    ) -> None:
-        fake_ffprobe_duration(5400.0)
+    def test_unknown_match_id(self, tmp_path: Path) -> None:
+        storage = LocalStorage(root=tmp_path / "ws")
+        src = self._src_mp4(tmp_path)
+        with pytest.raises(IngestionError, match="Unknown match_id"):
+            ingest_local_catalog_match("not-in-catalog-xyz", src, storage)
 
-        with patch(
-            "pipeline.ingestion._download_video",
-            side_effect=lambda _url, w: self._fake_download(w),
-        ) as mock_dl:
-            first = ingest("https://www.youtube.com/watch?v=abc123")
-            second = ingest("https://www.youtube.com/watch?v=abc123")
-
-        assert first == second
-        assert mock_dl.call_count == 1  # only downloaded once
-
-    @patch("pipeline.ingestion._extract_video_id", return_value="short1")
     def test_rejects_short_video(
         self,
-        _mock_id: MagicMock,
-        tmp_workspace: Path,
+        tmp_path: Path,
         fake_ffprobe_duration: Callable[[float], None],
     ) -> None:
         fake_ffprobe_duration(300.0)
+        storage = LocalStorage(root=tmp_path / "ws")
+        src = self._src_mp4(tmp_path)
 
-        with (
-            patch(
-                "pipeline.ingestion._download_video",
-                side_effect=lambda _url, w: self._fake_download(w),
-            ),
-            pytest.raises(IngestionError, match="only 300s"),
-        ):
-            ingest("https://www.youtube.com/watch?v=short1")
+        with pytest.raises(IngestionError, match="only 300s"):
+            ingest_local_catalog_match("istanbul-2005", src, storage)
 
-    @patch("pipeline.ingestion._extract_video_id", return_value="short2")
     def test_skip_flag_allows_short_video(
         self,
-        _mock_id: MagicMock,
-        tmp_workspace: Path,
+        tmp_path: Path,
         fake_ffprobe_duration: Callable[[float], None],
     ) -> None:
         fake_ffprobe_duration(300.0)
+        storage = LocalStorage(root=tmp_path / "ws")
+        src = self._src_mp4(tmp_path)
 
-        with patch(
-            "pipeline.ingestion._download_video",
-            side_effect=lambda _url, w: self._fake_download(w),
-        ):
-            metadata = ingest(
-                "https://www.youtube.com/watch?v=short2",
-                skip_duration_check=True,
-            )
+        meta = ingest_local_catalog_match(
+            "istanbul-2005",
+            src,
+            storage,
+            skip_duration_check=True,
+        )
 
-        assert metadata["duration_seconds"] == 300.0
+        assert meta["duration_seconds"] == 300.0
 
-    @patch("pipeline.ingestion._extract_video_id", return_value="meta1")
     def test_metadata_json_is_valid(
         self,
-        _mock_id: MagicMock,
-        tmp_workspace: Path,
+        tmp_path: Path,
         fake_ffprobe_duration: Callable[[float], None],
     ) -> None:
         fake_ffprobe_duration(5400.0)
+        storage = LocalStorage(root=tmp_path / "ws")
+        src = self._src_mp4(tmp_path)
 
-        with patch(
-            "pipeline.ingestion._download_video",
-            side_effect=lambda _url, w: self._fake_download(w),
-        ):
-            metadata = ingest("https://www.youtube.com/watch?v=meta1")
+        ingest_local_catalog_match("istanbul-2005", src, storage)
 
-        raw = json.loads(Path(metadata["workspace"], "metadata.json").read_text())
-        assert raw["video_id"] == "meta1"
-        assert raw["source"] == "https://www.youtube.com/watch?v=meta1"
+        raw = json.loads(storage.local_path("istanbul-2005", "metadata.json").read_text())
+        assert raw["video_id"] == "istanbul-2005"
+        assert raw["source"] == "catalog:istanbul-2005"
         assert raw["duration_seconds"] == 5400.0

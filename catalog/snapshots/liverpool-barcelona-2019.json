@@ -1,0 +1,51 @@
+{
+  "video_id": "liverpool-barcelona-2019",
+  "fixture_id": 0,
+  "event_count": 4,
+  "events": [
+    {
+      "minute": 7,
+      "extra_minute": null,
+      "half": "2nd Half",
+      "event_type": "goal",
+      "team": "Liverpool",
+      "player": "Origi",
+      "assist": null,
+      "score": "1 - 0",
+      "detail": "Normal Goal"
+    },
+    {
+      "minute": 54,
+      "extra_minute": null,
+      "half": "2nd Half",
+      "event_type": "goal",
+      "team": "Liverpool",
+      "player": "Wijnaldum",
+      "assist": null,
+      "score": "2 - 0",
+      "detail": "Normal Goal"
+    },
+    {
+      "minute": 56,
+      "extra_minute": null,
+      "half": "2nd Half",
+      "event_type": "goal",
+      "team": "Liverpool",
+      "player": "Wijnaldum",
+      "assist": null,
+      "score": "3 - 0",
+      "detail": "Normal Goal"
+    },
+    {
+      "minute": 79,
+      "extra_minute": null,
+      "half": "2nd Half",
+      "event_type": "goal",
+      "team": "Liverpool",
+      "player": "Origi",
+      "assist": null,
+      "score": "4 - 0",
+      "detail": "Normal Goal"
+    }
+  ]
+}

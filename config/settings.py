@@ -72,3 +72,26 @@ CLIP_AUDIO_BITRATE: str = "192k"
 # API-Football (api-sports.io) — header-based auth with x-rapidapi-key
 API_FOOTBALL_KEY: str = os.environ.get("API_FOOTBALL_KEY", "")
 API_FOOTBALL_BASE_URL: str = "https://v3.football.api-sports.io"
+
+# --- Azure deployment ---
+# Prefer Azure whenever a connection string is set (deployed environments). Override with
+# STORAGE_BACKEND=local for dev without touching Key Vault / secrets.
+_AZ_CONN = os.environ.get("AZURE_STORAGE_CONNECTION_STRING", "").strip()
+_STORAGE_EXPLICIT = os.environ.get("STORAGE_BACKEND", "").strip().lower()
+if _STORAGE_EXPLICIT in ("azure", "local"):
+    STORAGE_BACKEND: str = _STORAGE_EXPLICIT
+elif _AZ_CONN:
+    STORAGE_BACKEND = "azure"
+else:
+    STORAGE_BACKEND = "local"
+
+AZURE_STORAGE_CONNECTION_STRING: str = os.environ.get("AZURE_STORAGE_CONNECTION_STRING", "")
+AZURE_BLOB_CONTAINER_VIDEOS: str = "videos"
+AZURE_BLOB_CONTAINER_PIPELINE: str = "pipeline"
+AZURE_BLOB_CONTAINER_HIGHLIGHTS: str = "highlights"
+AZURE_QUEUE_NAME: str = "job-queue"
+AZURE_TABLE_NAME: str = "jobs"
+SAS_EXPIRY_HOURS: int = 24
+API_KEYS: list[str] = [
+    k.strip() for k in os.environ.get("API_KEYS", "").split(",") if k.strip()
+]

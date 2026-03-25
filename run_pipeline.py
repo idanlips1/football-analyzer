@@ -15,6 +15,9 @@ import sys
 from typing import Any
 
 from config.settings import PIPELINE_WORKSPACE
+from models.events import AlignedEvent
+from models.game import GameState
+from models.highlight_query import HighlightQuery, QueryType
 from pipeline.clip_builder import build_highlights
 from pipeline.event_aligner import align_events
 from pipeline.match_events import fetch_match_events
@@ -23,6 +26,7 @@ from pipeline.match_finder import (
     resolve_fixture_for_video,
 )
 from pipeline.transcription import transcribe
+from utils.storage import LocalStorage
 
 
 def _format_duration(seconds: float) -> str:
@@ -148,8 +152,12 @@ def run(video_id: str) -> None:
     dur_min = metadata["duration_seconds"] / 60
     print(f"\n  Workspace: {video_id} ({dur_min:.0f} min)")
 
-    # ------- Resolve fixture if missing --------
-    if not metadata.get("fixture_id"):
+    storage = LocalStorage(root=PIPELINE_WORKSPACE)
+
+    # ------- Resolve fixture if missing (API path only) --------
+    if metadata.get("events_snapshot"):
+        print("  Catalog events snapshot — skipping API fixture resolution")
+    elif not metadata.get("fixture_id"):
         print("  No fixture ID in metadata — resolving…")
         fixture_id = _resolve_fixture(metadata)
         if not fixture_id:
@@ -163,13 +171,13 @@ def run(video_id: str) -> None:
 
     # ------- Step 2: Fetch match events --------
     print("\n[2/5] Fetching match events from API-Football...")
-    match_events = fetch_match_events(metadata)
+    match_events = fetch_match_events(metadata, storage)
     evt_count = match_events["event_count"]
     print(f"       {evt_count} events retrieved")
 
     # ------- Step 3: Transcribe + kickoff ------
     print("\n[3/5] Transcribing commentary & detecting kickoff...")
-    transcription = transcribe(metadata)
+    transcription = transcribe(metadata, storage)
     utt_count = len(transcription.get("utterances", []))
     ko1 = transcription.get("kickoff_first_half")
     ko2 = transcription.get("kickoff_second_half")
@@ -198,15 +206,41 @@ def run(video_id: str) -> None:
         print("\n  Error: Cannot proceed without kickoff timestamps.", file=sys.stderr)
         sys.exit(1)
 
+    k1 = float(transcription["kickoff_first_half"])
+    k2 = float(transcription["kickoff_second_half"])
+
     # ------- Step 4: Align events --------------
     print("\n[4/5] Aligning events to video timestamps...")
-    aligned = align_events(match_events, transcription, metadata)
+    aligned = align_events(match_events, metadata, storage, k1, k2)
     aligned_count = aligned["event_count"]
     print(f"       {aligned_count} events aligned to video positions")
 
     # ------- Step 5: Cut clips & highlights ----
     print("\n[5/5] Cutting clips & assembling highlights...")
-    result = build_highlights(aligned, metadata, overwrite=True)
+    vid = str(metadata["video_id"])
+    season = str(metadata.get("season_label", ""))
+    game = GameState(
+        video_id=vid,
+        home_team=str(metadata.get("home_team", "")),
+        away_team=str(metadata.get("away_team", "")),
+        league=str(metadata.get("competition", "")),
+        date=season[:10] if len(season) >= 10 else season,
+        fixture_id=int(metadata.get("fixture_id") or 0),
+        video_filename=str(metadata.get("video_filename", "match.mp4")),
+        source=str(metadata.get("source", "")),
+        duration_seconds=float(metadata["duration_seconds"]),
+        kickoff_first_half=k1,
+        kickoff_second_half=k2,
+    )
+    aligned_events = [AlignedEvent.from_dict(e) for e in aligned.get("events", [])]
+    hq = HighlightQuery(query_type=QueryType.FULL_SUMMARY, raw_query="full match highlights")
+    result = build_highlights(
+        aligned_events,
+        game,
+        hq,
+        storage,
+        confirm_overwrite_fn=lambda _path: True,
+    )
 
     print("\n  Done! Highlights saved to:")
     print(f"    {result['highlights_path']}")
