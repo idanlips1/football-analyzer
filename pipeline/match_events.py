@@ -92,9 +92,6 @@ def fetch_match_events(metadata: dict[str, Any], storage: StorageBackend) -> dic
     return result
 
 
-
-
-
 def fetch_filtered_events(metadata: dict[str, Any], hq: Any) -> dict[str, Any]:
     """Fetch specific events from API-Football dynamically via HighlightQuery params.
     Does not cache to disk."""
