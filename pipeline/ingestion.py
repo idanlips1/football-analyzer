@@ -7,7 +7,6 @@ Use :func:`ingest_local_catalog_match` for local runs; operators upload with
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -71,8 +70,8 @@ def ingest_local_catalog_match(
 
     video_id = entry.match_id
     storage.workspace_path(video_id)
+    storage.upload_file(video_id, "match.mp4", src)
     dest = storage.local_path(video_id, "match.mp4")
-    shutil.copy2(src, dest)
 
     try:
         duration = get_video_duration(dest)

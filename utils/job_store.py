@@ -58,6 +58,7 @@ class AzureTableJobStore:
             self._table = _table_client
         else:
             from azure.data.tables import TableServiceClient
+
             service = TableServiceClient.from_connection_string(connection_string)
             self._table = service.get_table_client(table_name)
 
@@ -99,9 +100,7 @@ class AzureTableJobStore:
     def get(self, job_id: str) -> Job | None:
         if not _JOB_ID_RE.match(job_id):
             return None
-        entities = list(
-            self._table.query_entities(f"RowKey eq '{job_id}'", results_per_page=1)
-        )
+        entities = list(self._table.query_entities(f"RowKey eq '{job_id}'", results_per_page=1))
         if not entities:
             return None
         return self._from_entity(entities[0])

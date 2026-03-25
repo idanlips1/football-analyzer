@@ -135,6 +135,9 @@ def align_events(
     storage: StorageBackend,
     kickoff_first: float,
     kickoff_second: float,
+    *,
+    force_recompute: bool = False,
+    save_to_disk: bool = True,
 ) -> dict[str, Any]:
     """Orchestrate Stage 4: estimate → refine → filter → cache.
 
@@ -148,7 +151,7 @@ def align_events(
     video_id: str = match_events_data.get("video_id", metadata.get("video_id", ""))
     cache_path = storage.local_path(video_id, ALIGNMENT_FILENAME)
 
-    if cache_path.exists():
+    if not force_recompute and cache_path.exists():
         log.info("Stage 4 cache hit — loading aligned events for %s", video_id)
         return storage.read_json(video_id, ALIGNMENT_FILENAME)
 
@@ -195,6 +198,10 @@ def align_events(
         "events": [a.to_dict() for a in aligned],
     }
 
-    storage.write_json(video_id, ALIGNMENT_FILENAME, result)
-    log.info("Stage 4 complete — saved %s for %s", ALIGNMENT_FILENAME, video_id)
+    if save_to_disk:
+        storage.write_json(video_id, ALIGNMENT_FILENAME, result)
+        log.info("Stage 4 complete — saved %s for %s", ALIGNMENT_FILENAME, video_id)
+    else:
+        log.info("Stage 4 complete — aligned %d events dynamically in-memory", len(aligned))
+
     return result

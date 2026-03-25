@@ -52,6 +52,7 @@ class AzureStorageQueue:
             self._client = _queue_client
         else:
             from azure.storage.queue import QueueClient
+
             self._client = QueueClient.from_connection_string(connection_string, queue_name)
 
     def send(self, message: dict[str, Any]) -> None:

@@ -145,7 +145,7 @@ def main() -> None:
             overwrite=True,
         )
         print(f"Uploaded metadata → videos/{blob_meta}")
-        print(f"Done. POST /api/v1/jobs with {{\"match_id\": {entry.match_id!r}, ...}}")
+        print(f'Done. POST /api/v1/jobs with {{"match_id": {entry.match_id!r}, ...}}')
 
 
 if __name__ == "__main__":

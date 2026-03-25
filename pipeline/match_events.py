@@ -64,7 +64,6 @@ def fetch_match_events(metadata: dict[str, Any], storage: StorageBackend) -> dic
     if not fixture_id:
         raise MatchEventsError("metadata is missing 'fixture_id' — cannot fetch match events")
 
-
     if cache_path.exists():
         log.info("Match events cache hit for fixture %s", fixture_id)
         cached: dict[str, Any] = storage.read_json(video_id, MATCH_EVENTS_FILENAME)
@@ -91,6 +90,64 @@ def fetch_match_events(metadata: dict[str, Any], storage: StorageBackend) -> dic
         cache_path,
     )
     return result
+
+
+
+
+
+def fetch_filtered_events(metadata: dict[str, Any], hq: Any) -> dict[str, Any]:
+    """Fetch specific events from API-Football dynamically via HighlightQuery params.
+    Does not cache to disk."""
+    fixture_id: int | None = metadata.get("fixture_id")
+    if not fixture_id:
+        raise MatchEventsError("metadata is missing 'fixture_id' — cannot fetch match events")
+
+    if not API_FOOTBALL_KEY:
+        raise MatchEventsError("API_FOOTBALL_KEY is not set — add it to your .env file")
+
+    url = f"{API_FOOTBALL_BASE_URL}/fixtures/events?fixture={fixture_id}"
+    if hq.api_team_id:
+        url += f"&team={hq.api_team_id}"
+    if hq.api_player_id:
+        url += f"&player={hq.api_player_id}"
+    if hq.api_event_type:
+        url += f"&type={hq.api_event_type}"
+
+    log.info("Fetching filtered match events: %s", url)
+
+    req = urllib.request.Request(
+        url,
+        headers={
+            "x-rapidapi-key": API_FOOTBALL_KEY,
+            "x-rapidapi-host": "v3.football.api-sports.io",
+        },
+    )
+
+    t0 = time.monotonic()
+    try:
+        with urllib.request.urlopen(req) as resp:  # nosec B310
+            body: dict[str, Any] = json.loads(resp.read().decode())
+    except (urllib.error.URLError, json.JSONDecodeError) as exc:
+        raise MatchEventsError(f"Filtered API request failed: {exc}") from exc
+
+    elapsed = time.monotonic() - t0
+    log.info("API-Football filtered events response received in %.1f s", elapsed)
+
+    errors = body.get("errors")
+    if errors:
+        raise MatchEventsError(f"API-Football returned errors: {errors}")
+
+    raw_events: list[dict[str, Any]] = body.get("response", [])
+    log.info("API returned %d raw filtered events", len(raw_events))
+
+    parsed = _parse_events(raw_events)
+
+    return {
+        "video_id": metadata.get("video_id", ""),
+        "fixture_id": fixture_id,
+        "event_count": len(parsed),
+        "events": [ev.to_dict() for ev in parsed],
+    }
 
 
 # ── Private helpers ─────────────────────────────────────────────────────────
