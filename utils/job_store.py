@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Protocol, runtime_checkable
 
 from models.job import Job, JobResult, JobStatus
+
+_JOB_ID_RE = re.compile(r"^[0-9a-f]{1,32}$")
 
 
 @runtime_checkable
@@ -62,6 +65,8 @@ class AzureTableJobStore:
         return {
             "PartitionKey": job.created_at[:10],
             "RowKey": job.job_id,
+            "match_id": job.match_id or "",
+            "highlights_query": job.highlights_query or "",
             "query": job.query,
             "status": job.status.value,
             "progress": job.progress or "",
@@ -77,6 +82,8 @@ class AzureTableJobStore:
             result = JobResult.from_dict(json.loads(entity["result"]))
         return Job(
             job_id=entity["RowKey"],
+            match_id=entity.get("match_id") or "",
+            highlights_query=entity.get("highlights_query") or "full match highlights",
             query=entity.get("query", ""),
             status=JobStatus(entity["status"]),
             progress=entity.get("progress") or None,
@@ -90,6 +97,8 @@ class AzureTableJobStore:
         self._table.create_entity(self._to_entity(job))
 
     def get(self, job_id: str) -> Job | None:
+        if not _JOB_ID_RE.match(job_id):
+            return None
         entities = list(
             self._table.query_entities(f"RowKey eq '{job_id}'", results_per_page=1)
         )

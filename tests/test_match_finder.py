@@ -1,28 +1,21 @@
-"""Tests for pipeline.match_finder — YouTube search and API-Football fixture lookup."""
+"""Tests for pipeline.match_finder — API-Football fixture lookup and title parsing."""
 
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from pipeline.match_finder import (
-    MatchFinderError,
-    VideoInfo,
     _score_matches,
-    download_and_save,
-    find_match,
+    extract_video_id_from_url,
+    extract_years_from_text,
+    infer_league_id_from_query,
     is_url,
     parse_teams_from_video_title,
     parse_video_title,
     resolve_fixture_for_video,
     search_fixtures,
-    search_youtube,
 )
-from utils.storage import LocalStorage
 
 # ── is_url ──────────────────────────────────────────────────────────────────
 
@@ -44,96 +37,35 @@ class TestIsUrl:
         assert is_url("www.youtube.com/watch?v=abc") is False
 
 
-# ── search_youtube ──────────────────────────────────────────────────────────
+# ── extract_video_id_from_url ───────────────────────────────────────────────
 
 
-class TestSearchYouTube:
-    @staticmethod
-    def _yt_entries() -> list[dict[str, Any]]:
-        return [
-            {
-                "id": "vid1",
-                "title": "Liverpool vs Arsenal Full Match",
-                "webpage_url": "https://www.youtube.com/watch?v=vid1",
-                "duration": 5700,
-            },
-            {
-                "id": "vid2",
-                "title": "Liverpool vs Arsenal Highlights",
-                "webpage_url": "https://www.youtube.com/watch?v=vid2",
-                "duration": 600,
-            },
-            {
-                "id": "vid3",
-                "title": "Liverpool vs Arsenal Full Match HD",
-                "webpage_url": "https://www.youtube.com/watch?v=vid3",
-                "duration": 5400,
-            },
-        ]
+class TestExtractVideoIdFromUrl:
+    def test_watch_url(self) -> None:
+        assert (
+            extract_video_id_from_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+            == "dQw4w9WgXcQ"
+        )
 
-    @patch("pipeline.match_finder.yt_dlp.YoutubeDL")
-    def test_returns_filtered_and_sorted(self, mock_ydl_cls: MagicMock) -> None:
-        mock_ydl = MagicMock()
-        mock_ydl_cls.return_value.__enter__ = MagicMock(return_value=mock_ydl)
-        mock_ydl_cls.return_value.__exit__ = MagicMock(return_value=False)
-        mock_ydl.extract_info.return_value = {"entries": self._yt_entries()}
+    def test_short_url(self) -> None:
+        assert extract_video_id_from_url("https://youtu.be/dQw4w9WgXcQ") == "dQw4w9WgXcQ"
 
-        results = search_youtube("liverpool vs arsenal")
+    def test_not_youtube(self) -> None:
+        assert extract_video_id_from_url("https://example.com/video") is None
 
-        assert len(results) == 2
-        assert results[0]["video_id"] == "vid1"
-        assert results[0]["duration_seconds"] == 5700
-        assert results[1]["video_id"] == "vid3"
 
-    @patch("pipeline.match_finder.yt_dlp.YoutubeDL")
-    def test_filters_short_videos(self, mock_ydl_cls: MagicMock) -> None:
-        short_entries = [
-            {
-                "id": "short1",
-                "title": "Highlights 10min",
-                "webpage_url": "https://www.youtube.com/watch?v=short1",
-                "duration": 600,
-            },
-        ]
-        mock_ydl = MagicMock()
-        mock_ydl_cls.return_value.__enter__ = MagicMock(return_value=mock_ydl)
-        mock_ydl_cls.return_value.__exit__ = MagicMock(return_value=False)
-        mock_ydl.extract_info.return_value = {"entries": short_entries}
+# ── extract_years_from_text / infer_league_id_from_query ───────────────────
 
-        results = search_youtube("some match")
-        assert results == []
 
-    @patch("pipeline.match_finder.yt_dlp.YoutubeDL")
-    def test_handles_no_entries(self, mock_ydl_cls: MagicMock) -> None:
-        mock_ydl = MagicMock()
-        mock_ydl_cls.return_value.__enter__ = MagicMock(return_value=mock_ydl)
-        mock_ydl_cls.return_value.__exit__ = MagicMock(return_value=False)
-        mock_ydl.extract_info.return_value = {"entries": []}
+class TestQueryHelpers:
+    def test_extract_years(self) -> None:
+        assert extract_years_from_text("final 2022 and 2019") == [2022, 2019]
 
-        results = search_youtube("nonexistent match")
-        assert results == []
+    def test_infer_ucl(self) -> None:
+        assert infer_league_id_from_query("UCL semi 2019") == 2
 
-    @patch("pipeline.match_finder.yt_dlp.YoutubeDL")
-    def test_handles_none_entries(self, mock_ydl_cls: MagicMock) -> None:
-        mock_ydl = MagicMock()
-        mock_ydl_cls.return_value.__enter__ = MagicMock(return_value=mock_ydl)
-        mock_ydl_cls.return_value.__exit__ = MagicMock(return_value=False)
-        mock_ydl.extract_info.return_value = None
-
-        results = search_youtube("nonexistent match")
-        assert results == []
-
-    @patch("pipeline.match_finder.yt_dlp.YoutubeDL")
-    def test_respects_max_results(self, mock_ydl_cls: MagicMock) -> None:
-        mock_ydl = MagicMock()
-        mock_ydl_cls.return_value.__enter__ = MagicMock(return_value=mock_ydl)
-        mock_ydl_cls.return_value.__exit__ = MagicMock(return_value=False)
-        mock_ydl.extract_info.return_value = {"entries": self._yt_entries()}
-
-        search_youtube("liverpool vs arsenal", max_results=3)
-
-        call_args = mock_ydl.extract_info.call_args
-        assert "ytsearch3:" in call_args[0][0]
+    def test_infer_none(self) -> None:
+        assert infer_league_id_from_query("random game") is None
 
 
 # ── search_fixtures ─────────────────────────────────────────────────────────
@@ -246,180 +178,6 @@ class TestSearchFixtures:
 
         fixtures_call = mock_urlopen.call_args_list[2]
         assert "season=2023" in fixtures_call[0][0].full_url
-
-
-# ── find_match ──────────────────────────────────────────────────────────────
-
-
-class TestFindMatch:
-    @staticmethod
-    def _fake_download(_url: str, workspace: Path) -> Path:
-        video = workspace / "fake_match.mp4"
-        video.write_bytes(b"\x00" * 512)
-        return video
-
-    @patch("pipeline.match_finder._extract_video_id", return_value="abc123")
-    @patch("pipeline.match_finder.get_video_duration", return_value=5400.0)
-    def test_url_input_downloads_and_returns_metadata(
-        self,
-        _mock_dur: MagicMock,
-        _mock_id: MagicMock,
-        tmp_storage: LocalStorage,
-    ) -> None:
-        with patch(
-            "pipeline.match_finder._download_video",
-            side_effect=lambda _url, w: self._fake_download(_url, w),
-        ):
-            result = find_match("https://www.youtube.com/watch?v=abc123", tmp_storage)
-
-        assert result["video_id"] == "abc123"
-        assert result["duration_seconds"] == 5400.0
-        assert result["fixture_id"] is None
-        meta_path = tmp_storage.local_path("abc123", "metadata.json")
-        assert meta_path.exists()
-
-    @patch("pipeline.match_finder._extract_video_id", return_value="cached1")
-    def test_url_input_returns_cached(
-        self,
-        _mock_id: MagicMock,
-        tmp_storage: LocalStorage,
-    ) -> None:
-        cached_meta = {
-            "video_id": "cached1",
-            "source": "https://www.youtube.com/watch?v=cached1",
-            "video_filename": "match.mp4",
-            "duration_seconds": 5400.0,
-            "workspace": str(tmp_storage.workspace_path("cached1")),
-            "fixture_id": None,
-        }
-        tmp_storage.write_json("cached1", "metadata.json", cached_meta)
-
-        result = find_match("https://www.youtube.com/watch?v=cached1", tmp_storage)
-
-        assert result == cached_meta
-
-    @patch("pipeline.match_finder.search_youtube")
-    def test_text_input_returns_search_results(
-        self,
-        mock_search: MagicMock,
-        tmp_storage: LocalStorage,
-    ) -> None:
-        candidates = [
-            {
-                "title": "Liverpool vs Arsenal Full Match",
-                "url": "https://www.youtube.com/watch?v=vid1",
-                "duration_seconds": 5700,
-                "video_id": "vid1",
-            }
-        ]
-        mock_search.return_value = candidates
-
-        result = find_match("liverpool vs arsenal", tmp_storage)
-
-        assert result["type"] == "search_results"
-        assert result["candidates"] == candidates
-        mock_search.assert_called_once_with("liverpool vs arsenal")
-
-    @patch("pipeline.match_finder._extract_video_id", return_value="short1")
-    @patch("pipeline.match_finder.get_video_duration", return_value=300.0)
-    def test_url_input_rejects_short_video(
-        self,
-        _mock_dur: MagicMock,
-        _mock_id: MagicMock,
-        tmp_storage: LocalStorage,
-    ) -> None:
-        with (
-            patch(
-                "pipeline.match_finder._download_video",
-                side_effect=lambda _url, w: self._fake_download(_url, w),
-            ),
-            pytest.raises(MatchFinderError, match="too short"),
-        ):
-            find_match("https://www.youtube.com/watch?v=short1", tmp_storage)
-
-
-# ── download_and_save ───────────────────────────────────────────────────────
-
-
-class TestDownloadAndSave:
-    @staticmethod
-    def _fake_download(_url: str, workspace: Path) -> Path:
-        video = workspace / "fake_match.mp4"
-        video.write_bytes(b"\x00" * 512)
-        return video
-
-    @patch("pipeline.match_finder._extract_video_id", return_value="dl1")
-    @patch("pipeline.match_finder.get_video_duration", return_value=5400.0)
-    def test_downloads_and_saves_with_fixture_id(
-        self,
-        _mock_dur: MagicMock,
-        _mock_id: MagicMock,
-        tmp_storage: LocalStorage,
-    ) -> None:
-        with patch(
-            "pipeline.match_finder._download_video",
-            side_effect=lambda _url, w: self._fake_download(_url, w),
-        ):
-            result = download_and_save(
-                "https://www.youtube.com/watch?v=dl1",
-                tmp_storage,
-                fixture_id=12345,
-            )
-
-        assert result["video_id"] == "dl1"
-        assert result["fixture_id"] == 12345
-        assert result["duration_seconds"] == 5400.0
-
-        raw = tmp_storage.read_json("dl1", "metadata.json")
-        assert raw["fixture_id"] == 12345
-
-    @patch("pipeline.match_finder._extract_video_id", return_value="dl2")
-    @patch("pipeline.match_finder.get_video_duration", return_value=5400.0)
-    def test_caching_returns_existing(
-        self,
-        _mock_dur: MagicMock,
-        _mock_id: MagicMock,
-        tmp_storage: LocalStorage,
-    ) -> None:
-        with patch(
-            "pipeline.match_finder._download_video",
-            side_effect=lambda _url, w: self._fake_download(_url, w),
-        ) as mock_dl:
-            first = download_and_save("https://www.youtube.com/watch?v=dl2", tmp_storage)
-            second = download_and_save("https://www.youtube.com/watch?v=dl2", tmp_storage)
-
-        assert first == second
-        assert mock_dl.call_count == 1
-
-    @patch("pipeline.match_finder._extract_video_id", return_value="dl3")
-    @patch("pipeline.match_finder.get_video_duration", return_value=300.0)
-    def test_skip_duration_check(
-        self,
-        _mock_dur: MagicMock,
-        _mock_id: MagicMock,
-        tmp_storage: LocalStorage,
-    ) -> None:
-        with patch(
-            "pipeline.match_finder._download_video",
-            side_effect=lambda _url, w: self._fake_download(_url, w),
-        ):
-            result = download_and_save(
-                "https://www.youtube.com/watch?v=dl3",
-                tmp_storage,
-                skip_duration_check=True,
-            )
-
-        assert result["duration_seconds"] == 300.0
-
-    @patch("pipeline.match_finder._extract_video_id")
-    def test_error_on_bad_url(
-        self,
-        mock_id: MagicMock,
-        tmp_storage: LocalStorage,
-    ) -> None:
-        mock_id.side_effect = MatchFinderError("Could not extract video ID")
-        with pytest.raises(MatchFinderError, match="Could not extract"):
-            download_and_save("https://bad-url.example.com", tmp_storage)
 
 
 # ── parse_teams_from_video_title / resolve_fixture_for_video ────────────────
@@ -655,20 +413,3 @@ class TestScoreMatches:
     def test_partial_score(self) -> None:
         row = {"score": {"home": 3, "away": None}}
         assert _score_matches(row, 3, 1) is False
-
-
-# ── VideoInfo ──────────────────────────────────────────────────────────────
-
-
-class TestVideoInfo:
-    def test_upload_year_from_date(self) -> None:
-        v = VideoInfo(title="test", upload_date="20220529")
-        assert v.upload_year == 2022
-
-    def test_upload_year_empty(self) -> None:
-        v = VideoInfo()
-        assert v.upload_year is None
-
-    def test_upload_year_short_string(self) -> None:
-        v = VideoInfo(upload_date="202")
-        assert v.upload_year is None

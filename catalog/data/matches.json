@@ -1,0 +1,114 @@
+{
+  "matches": [
+    {
+      "match_id": "istanbul-2005",
+      "title": "Liverpool vs AC Milan — 2005 Champions League Final (Istanbul)",
+      "home_team": "Liverpool",
+      "away_team": "AC Milan",
+      "competition": "UEFA Champions League",
+      "season_label": "2004-05",
+      "events_snapshot": "istanbul-2005",
+      "fixture_id": null
+    },
+    {
+      "match_id": "barcelona-psg-2017",
+      "title": "Barcelona vs PSG — La Remontada (6-1)",
+      "home_team": "Barcelona",
+      "away_team": "Paris Saint Germain",
+      "competition": "UEFA Champions League",
+      "season_label": "2016-17",
+      "events_snapshot": "barcelona-psg-2017",
+      "fixture_id": null
+    },
+    {
+      "match_id": "germany-brazil-2014",
+      "title": "Germany vs Brazil — 2014 FIFA World Cup Semi-Final",
+      "home_team": "Germany",
+      "away_team": "Brazil",
+      "competition": "FIFA World Cup",
+      "season_label": "2014",
+      "events_snapshot": "germany-brazil-2014",
+      "fixture_id": null
+    },
+    {
+      "match_id": "liverpool-barcelona-2019",
+      "title": "Liverpool vs Barcelona — 2019 Champions League Semi-Final (2nd leg)",
+      "home_team": "Liverpool",
+      "away_team": "Barcelona",
+      "competition": "UEFA Champions League",
+      "season_label": "2018-19",
+      "events_snapshot": "liverpool-barcelona-2019",
+      "fixture_id": null
+    },
+    {
+      "match_id": "argentina-france-2022",
+      "title": "Argentina vs France — 2022 FIFA World Cup Final",
+      "home_team": "Argentina",
+      "away_team": "France",
+      "competition": "FIFA World Cup",
+      "season_label": "2022",
+      "events_snapshot": "argentina-france-2022",
+      "fixture_id": null
+    },
+    {
+      "match_id": "tottenham-ajax-2019",
+      "title": "Tottenham vs Ajax — 2019 Champions League Semi-Final (2nd leg)",
+      "home_team": "Tottenham",
+      "away_team": "Ajax",
+      "competition": "UEFA Champions League",
+      "season_label": "2018-19",
+      "events_snapshot": "tottenham-ajax-2019",
+      "fixture_id": null
+    },
+    {
+      "match_id": "real-madrid-man-city-2022",
+      "title": "Real Madrid vs Manchester City — 2022 Champions League Semi-Final",
+      "home_team": "Real Madrid",
+      "away_team": "Manchester City",
+      "competition": "UEFA Champions League",
+      "season_label": "2021-22",
+      "events_snapshot": "real-madrid-man-city-2022",
+      "fixture_id": null
+    },
+    {
+      "match_id": "chelsea-bayern-2012",
+      "title": "Chelsea vs Bayern Munich — 2012 Champions League Final",
+      "home_team": "Chelsea",
+      "away_team": "Bayern Munich",
+      "competition": "UEFA Champions League",
+      "season_label": "2011-12",
+      "events_snapshot": "chelsea-bayern-2012",
+      "fixture_id": null
+    },
+    {
+      "match_id": "ajax-real-madrid-2019",
+      "title": "Ajax vs Real Madrid — 2019 Champions League Round of 16 (2nd leg)",
+      "home_team": "Ajax",
+      "away_team": "Real Madrid",
+      "competition": "UEFA Champions League",
+      "season_label": "2018-19",
+      "events_snapshot": "ajax-real-madrid-2019",
+      "fixture_id": null
+    },
+    {
+      "match_id": "leicester-qpr-2014",
+      "title": "Leicester City vs QPR — Premier League (title decider)",
+      "home_team": "Leicester City",
+      "away_team": "QPR",
+      "competition": "Premier League",
+      "season_label": "2015-16",
+      "events_snapshot": "leicester-qpr-2014",
+      "fixture_id": null
+    },
+    {
+      "match_id": "man-united-liverpool-facup-2024",
+      "title": "Manchester United vs Liverpool — FA Cup Quarter-Final 2023-24",
+      "home_team": "Manchester United",
+      "away_team": "Liverpool",
+      "competition": "Emirates FA Cup",
+      "season_label": "2023-24",
+      "events_snapshot": "man-united-liverpool-facup-2024",
+      "fixture_id": null
+    }
+  ]
+}

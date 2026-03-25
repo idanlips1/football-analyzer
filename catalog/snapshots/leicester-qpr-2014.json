@@ -1,0 +1,40 @@
+{
+  "video_id": "leicester-qpr-2014",
+  "fixture_id": 0,
+  "event_count": 3,
+  "events": [
+    {
+      "minute": 43,
+      "extra_minute": null,
+      "half": "1st Half",
+      "event_type": "goal",
+      "team": "Leicester City",
+      "player": "Vardy",
+      "assist": null,
+      "score": "1 - 0",
+      "detail": "Normal Goal"
+    },
+    {
+      "minute": 66,
+      "extra_minute": null,
+      "half": "2nd Half",
+      "event_type": "goal",
+      "team": "Leicester City",
+      "player": "Okazaki",
+      "assist": null,
+      "score": "2 - 0",
+      "detail": "Normal Goal"
+    },
+    {
+      "minute": 89,
+      "extra_minute": null,
+      "half": "2nd Half",
+      "event_type": "goal",
+      "team": "QPR",
+      "player": "Unknown",
+      "assist": null,
+      "score": "2 - 1",
+      "detail": "Normal Goal"
+    }
+  ]
+}

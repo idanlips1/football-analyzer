@@ -131,11 +131,19 @@ class BlobStorage:
         container = self._client.get_container_client(container_name)
         blob = container.get_blob_client(f"{video_id}/{filename}")
         try:
-            blob_bytes = blob.download_blob().readall()
-            local.write_bytes(blob_bytes)
-        except Exception:  # noqa: BLE001
-            # Blob doesn't exist yet — return path for creation (pipeline will write here)
-            pass
+            stream = blob.download_blob()
+            with open(local, "wb") as f:
+                stream.readinto(f)
+        except Exception as exc:  # noqa: BLE001
+            # Clean up partial downloads
+            if local.exists():
+                local.unlink()
+            # ResourceNotFoundError means blob doesn't exist yet — caller will create it
+            exc_type = type(exc).__name__
+            if exc_type not in ("ResourceNotFoundError", "HttpResponseError"):
+                raise StorageError(
+                    f"Failed to download {filename!r} for {video_id!r}: {exc}"
+                ) from exc
         return local
 
     def workspace_path(self, video_id: str) -> Path:

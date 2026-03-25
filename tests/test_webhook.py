@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -13,7 +13,7 @@ from utils.webhook import deliver_webhook
 async def test_deliver_webhook_success() -> None:
     mock_response = AsyncMock()
     mock_response.status_code = 200
-    mock_response.raise_for_status = AsyncMock()
+    mock_response.raise_for_status = Mock()
 
     with patch("utils.webhook.httpx.AsyncClient") as mock_client_cls:
         mock_client = AsyncMock()

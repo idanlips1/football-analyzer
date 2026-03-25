@@ -4,52 +4,74 @@ from __future__ import annotations
 
 import hashlib
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 
 from api.dependencies import get_job_queue, get_job_store
 from api.schemas import JobCreateRequest, JobCreateResponse
+from catalog.loader import get_match
 from models.job import Job
 
 router = APIRouter()
 
 
-def _query_hash(query: str) -> str:
-    normalized = query.strip().lower()
+def _job_cache_key(match_id: str, highlights_query: str) -> str:
+    normalized = f"{match_id.strip().lower()}::{highlights_query.strip().lower()}"
     return hashlib.sha256(normalized.encode()).hexdigest()[:16]
 
 
 @router.post("/jobs")
 async def create_job(request: JobCreateRequest) -> JSONResponse:
-    store = get_job_store()
+    job_store = get_job_store()
     queue = get_job_queue()
 
-    # Check cache: if a completed job exists with same query hash, return it
-    qhash = _query_hash(request.query)
-    try:
-        recent = store.list_recent(limit=100)
-        for existing in recent:
-            if (
-                existing.status.value == "completed"
-                and existing.result
-                and _query_hash(existing.query) == qhash
-            ):
-                return JSONResponse(
-                    status_code=200,
-                    content=existing.to_dict(),
-                )
-    except Exception:  # noqa: BLE001
-        pass  # Cache check failure is non-fatal
+    entry = get_match(request.match_id)
+    if entry is None:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": {
+                    "code": "unknown_match",
+                    "message": f"Unknown match_id: {request.match_id!r}. Use GET /api/v1/matches.",
+                }
+            },
+        )
 
-    job = Job(query=request.query, webhook_url=request.webhook_url)
-    store.create(job)
-    queue.send({
-        "job_id": job.job_id,
-        "query": job.query,
-        "webhook_url": job.webhook_url,
-        "kickoff_first_half": request.kickoff_first_half,
-        "kickoff_second_half": request.kickoff_second_half,
-    })
+    if request.kickoff_first_half is None and request.kickoff_second_half is None:
+        qhash = _job_cache_key(request.match_id, request.highlights_query)
+        try:
+            recent = job_store.list_recent(limit=100)
+            for existing in recent:
+                if (
+                    existing.status.value == "completed"
+                    and existing.result
+                    and _job_cache_key(existing.match_id, existing.highlights_query) == qhash
+                ):
+                    return JSONResponse(
+                        status_code=200,
+                        content=existing.to_dict(),
+                    )
+        except Exception:  # noqa: BLE001
+            pass
+
+    label = f"{entry.title} — {request.highlights_query}"
+    job = Job(
+        match_id=request.match_id.strip(),
+        highlights_query=request.highlights_query,
+        query=label,
+        webhook_url=str(request.webhook_url) if request.webhook_url else None,
+    )
+    job_store.create(job)
+    queue.send(
+        {
+            "job_id": job.job_id,
+            "match_id": job.match_id,
+            "highlights_query": job.highlights_query,
+            "webhook_url": job.webhook_url,
+            "kickoff_first_half": request.kickoff_first_half,
+            "kickoff_second_half": request.kickoff_second_half,
+        }
+    )
 
     return JSONResponse(
         status_code=202,
@@ -74,7 +96,7 @@ async def get_job(job_id: str) -> JSONResponse | dict:
 
 
 @router.get("/jobs")
-async def list_jobs(limit: int = 20) -> dict:
+async def list_jobs(limit: int = Query(default=20, ge=1, le=100)) -> dict:
     store = get_job_store()
     jobs = store.list_recent(limit=limit)
     return {"jobs": [j.to_dict() for j in jobs]}

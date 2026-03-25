@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from unittest.mock import patch
 
 import pytest
@@ -9,8 +10,9 @@ from fastapi.testclient import TestClient
 
 
 @pytest.fixture()
-def client():  # type: ignore[return]
+def client() -> Iterator[TestClient]:
     from api.app import create_app
+
     with patch("api.app.API_KEYS", ["test-key-123"]):
         app = create_app()
         yield TestClient(app)

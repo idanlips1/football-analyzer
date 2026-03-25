@@ -1,46 +1,67 @@
-"""Ingest entrypoint — one-time preprocessing script per game."""
+"""Interactive CLI: copy a local catalog match video into storage, then run preprocess.
+
+Place a ``.mp4`` on disk (download with yt-dlp outside this repo if needed), pick a
+catalog ``match_id``, and this script runs events → transcription → kickoff confirm
+→ alignment → ``game.json``. For cloud uploads use ``scripts/upload_catalog_match.py``.
+"""
 
 from __future__ import annotations
 
 import sys
 from collections.abc import Callable
-from typing import Any
+from pathlib import Path
 
-from config.settings import PIPELINE_WORKSPACE
-from models.game import GameState
-from pipeline.event_aligner import EventAlignerError, align_events
-from pipeline.match_events import MatchEventsError, fetch_match_events
-from pipeline.match_finder import (
-    MatchFinderError,
-    download_and_save,
-    find_match,
-    is_url,
-    resolve_fixture_for_video,
+from catalog.loader import list_matches
+from config.settings import (
+    AZURE_BLOB_CONTAINER_HIGHLIGHTS,
+    AZURE_BLOB_CONTAINER_PIPELINE,
+    AZURE_BLOB_CONTAINER_VIDEOS,
+    AZURE_STORAGE_CONNECTION_STRING,
+    PIPELINE_WORKSPACE,
+    STORAGE_BACKEND,
 )
-from pipeline.transcription import TranscriptionError, transcribe
+from pipeline.catalog_pipeline import CatalogPipelineError, run_catalog_stages_to_game_json
+from pipeline.event_aligner import EventAlignerError
+from pipeline.ingestion import IngestionError, ingest_local_catalog_match
+from pipeline.match_events import MatchEventsError
+from pipeline.transcription import TranscriptionError
 from utils.logger import setup_logging
-from utils.storage import LocalStorage, StorageBackend
+from utils.storage import BlobStorage, LocalStorage, StorageBackend
 
 ConfirmKickoffsFn = Callable[[float | None, float | None], tuple[float, float]]
 
 
-def _format_duration(seconds: float) -> str:
-    h, remainder = divmod(int(seconds), 3600)
-    m, s = divmod(remainder, 60)
-    if h:
-        return f"{h}h{m:02d}m"
-    return f"{m}m{s:02d}s"
+def _storage_for_cli() -> StorageBackend:
+    """Use Azure Blob when :data:`STORAGE_BACKEND` is ``azure`` (default if conn string set)."""
+    if STORAGE_BACKEND == "azure":
+        if not AZURE_STORAGE_CONNECTION_STRING.strip():
+            print(
+                "  STORAGE_BACKEND is azure but AZURE_STORAGE_CONNECTION_STRING is empty.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        return BlobStorage(
+            AZURE_STORAGE_CONNECTION_STRING,
+            AZURE_BLOB_CONTAINER_VIDEOS,
+            AZURE_BLOB_CONTAINER_PIPELINE,
+            AZURE_BLOB_CONTAINER_HIGHLIGHTS,
+        )
+    return LocalStorage(root=PIPELINE_WORKSPACE)
 
 
 def _parse_timestamp(raw: str) -> float | None:
-    """Parse mm:ss or raw-seconds string to float seconds. Returns None on failure."""
+    """Parse h:mm:ss, mm:ss, or raw-seconds string to float seconds."""
     raw = raw.strip()
     if ":" in raw:
         parts = raw.split(":")
         try:
-            return int(parts[0]) * 60 + int(parts[1])
+            if len(parts) == 3:
+                return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+            if len(parts) == 2:
+                return int(parts[0]) * 60 + int(parts[1])
         except (ValueError, IndexError):
             return None
+        return None
     try:
         return float(raw)
     except ValueError:
@@ -78,148 +99,77 @@ def _confirm_kickoffs_interactive(
     return first, second
 
 
-def _pick_youtube_result(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Show YouTube search results and let the user pick one."""
-    if not candidates:
-        print("  No full-match videos found.")
+def _pick_match_interactive() -> str | None:
+    matches = list_matches()
+    if not matches:
+        print("  Catalog is empty.")
         return None
-    print(f"\n  Found {len(candidates)} full-match candidate(s):\n")
-    for i, c in enumerate(candidates, 1):
-        dur = _format_duration(c["duration_seconds"])
-        print(f"  [{i}] {c['title']}")
-        print(f"      Duration: {dur}  |  {c['url']}\n")
-    choice = input(f"  Pick a video [1-{len(candidates)}], or 's' to skip: ").strip()
-    if choice.lower() == "s":
+    print("\n  Curated matches:\n")
+    for i, m in enumerate(matches, 1):
+        print(f"  [{i}] {m['match_id']} — {m['title']}")
+    raw = input("\n  Pick a number (or 'q' to quit): ").strip()
+    if raw.lower() == "q":
         return None
     try:
-        idx = int(choice) - 1
-        if 0 <= idx < len(candidates):
-            return candidates[idx]
+        idx = int(raw) - 1
+        if 0 <= idx < len(matches):
+            return str(matches[idx]["match_id"])
     except ValueError:
         pass
-    print("  Invalid choice, using first result.")
-    return candidates[0]
+    print("  Invalid choice.")
+    return None
 
 
-def _resolve_fixture_and_row(
-    video_title: str,
-    upload_year: int | None = None,
-) -> tuple[int | None, dict[str, Any] | None]:
-    """Attempt auto-resolution of fixture. Returns (fixture_id, fixture_row).
-
-    Silently returns (None, None) on any failure — caller handles the missing fixture.
-    """
-    try:
-        res = resolve_fixture_for_video("", video_title, upload_year=upload_year)
-        if res.fixture_id and res.fixture_row:
-            return res.fixture_id, res.fixture_row
-        if res.fixture_id:
-            return res.fixture_id, None
-    except Exception:  # noqa: BLE001  # nosec B110
-        pass
-    return None, None
-
-
-def _run_ingest(
-    url: str,
-    *,
+def _run_catalog_ingest(
+    match_id: str,
     storage: StorageBackend,
+    *,
     confirm_kickoffs_fn: ConfirmKickoffsFn = _confirm_kickoffs_interactive,
 ) -> None:
-    """Core ingest logic — separated from CLI for testability."""
+    path_raw = input("  Path to local full-match .mp4: ").strip()
+    if not path_raw:
+        print("  No path given.")
+        return
+    video_path = Path(path_raw).expanduser()
 
-    # 1. Download video
-    print("\n[1/5] Downloading video...")
-    metadata = download_and_save(url, storage, skip_duration_check=False)
-    video_id: str = metadata["video_id"]
-    source = f"https://www.youtube.com/watch?v={video_id}"
-    print(f"       Video ID: {video_id} ({metadata['duration_seconds'] / 60:.0f} min)")
+    print("\n[1/4] Copying video into workspace…")
+    ingest_local_catalog_match(match_id, video_path, storage)
 
-    # Resolve fixture from video title
-    video_filename = metadata.get("video_filename", "")
-    fixture_id, fixture_row = _resolve_fixture_and_row(video_filename)
-    if fixture_id:
-        metadata["fixture_id"] = fixture_id
-
-    # 2. Fetch events
-    print("\n[2/5] Fetching match events from API-Football...")
-    match_events = fetch_match_events(metadata, storage)
-    print(f"       {match_events['event_count']} events retrieved")
-
-    # 3. Transcribe
-    print("\n[3/5] Transcribing commentary...")
-    transcription = transcribe(metadata, storage)
-    print(f"       {len(transcription.get('utterances', []))} utterances")
-
-    # 4. Confirm kickoffs BEFORE alignment
-    print("\n[4/5] Confirming kickoff timestamps...")
-    kickoff_first, kickoff_second = confirm_kickoffs_fn(
-        transcription.get("kickoff_first_half"),
-        transcription.get("kickoff_second_half"),
+    print("\n[2/4] Fetching events, transcribing, aligning (this may take a while)…")
+    run_catalog_stages_to_game_json(
+        match_id,
+        storage,
+        progress_callback=lambda s: print(f"       … {s}"),
+        kickoff_fn=confirm_kickoffs_fn,
     )
-
-    # 5. Align events
-    print("\n[5/5] Aligning events to video timestamps...")
-    align_events(match_events, metadata, storage, kickoff_first, kickoff_second)
-
-    # Write game.json — only after all stages succeed
-    home = (fixture_row or {}).get("home_team", "")
-    away = (fixture_row or {}).get("away_team", "")
-    league = (fixture_row or {}).get("league", "")
-    date_raw = (fixture_row or {}).get("date", "")
-    date = str(date_raw)[:10] if date_raw else ""
-
-    game = GameState(
-        video_id=video_id,
-        home_team=home,
-        away_team=away,
-        league=league,
-        date=date,
-        fixture_id=int(metadata.get("fixture_id") or 0),
-        video_filename=video_filename,
-        source=source,
-        duration_seconds=metadata["duration_seconds"],
-        kickoff_first_half=kickoff_first,
-        kickoff_second_half=kickoff_second,
-    )
-    storage.write_json(video_id, "game.json", game.to_dict())
-    print(f"\n  Game ingested — {home} vs {away} | {league} | {date}\n")
+    print("\n  Done — game.json written. You can run the pipeline or API worker next.\n")
 
 
 def run() -> None:
     """CLI entrypoint for ingest."""
     setup_logging()
-    print("\n  Football Highlights — Ingest")
+    backend = "Azure Blob" if STORAGE_BACKEND == "azure" else "local workspace"
+    print(f"\n  Football Highlights — Catalog ingest ({backend})")
     print("  " + "-" * 30)
-    print("  Enter a YouTube URL or match search query.\n")
 
-    try:
-        user_input = input("> ").strip()
-    except (EOFError, KeyboardInterrupt):
-        print()
-        sys.exit(0)
-
-    if not user_input:
-        print("  Nothing entered.")
+    match_id = _pick_match_interactive()
+    if not match_id:
+        print("  Cancelled.")
         return
 
-    storage = LocalStorage(root=PIPELINE_WORKSPACE)
-
-    url = user_input
-    if not is_url(user_input):
-        result = find_match(user_input, storage)
-        candidates = result.get("candidates", [])
-        chosen = _pick_youtube_result(candidates)
-        if not chosen:
-            print("  Cancelled.")
-            return
-        url = chosen["url"]
+    storage = _storage_for_cli()
 
     try:
-        _run_ingest(url, storage=storage)
+        _run_catalog_ingest(match_id, storage)
     except KeyboardInterrupt:
         print("\nCancelled.")
-    except (MatchFinderError, MatchEventsError, TranscriptionError, EventAlignerError) as exc:
+    except (
+        IngestionError,
+        CatalogPipelineError,
+        MatchEventsError,
+        TranscriptionError,
+        EventAlignerError,
+    ) as exc:
         print(f"\n  Error: {exc}\n", file=sys.stderr)
 
 

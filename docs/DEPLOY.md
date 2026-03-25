@@ -3,77 +3,72 @@
 ## Prerequisites
 
 - Azure CLI (`az`) installed and logged in: `az login`
+- Bicep installed: `az bicep install`
 - Docker installed
 - An Azure subscription
 
-## 1. Create Resource Group
+## 1. Configure environment variables
+
+Use environment variables for secrets and run the deployment script.
 
 ```bash
-az group create --name football-hl-rg --location eastus
+export RG_NAME="football-hl-rg"
+export LOCATION="israelcentral"   # must match your subscription policy
+export BASE_NAME="football-hl"
+export KV_NAME="football-hl-kv-39f206"  # globally unique Key Vault name
+
+# Required API keys
+export ASSEMBLYAI_API_KEY="<your-assemblyai-key>"
+export API_FOOTBALL_KEY="<your-api-football-key>"
+
+# Optional
+export OPENAI_API_KEY="<your-openai-key>"   # default empty if unset
+export API_KEYS=","                         # "," disables API auth for now
+export DEPLOYMENT_NAME="main"
+export IMAGE_TAG="latest"
 ```
 
-## 2. Deploy Infrastructure (Bicep)
+### Curated matches (no YouTube in the worker)
+
+Videos are **uploaded ahead of time** to blob storage (`videos/<match_id>/match.mp4` + `metadata.json`). Use `scripts/upload_catalog_match.py` from a machine that has the files (optional: `requirements-tools.txt` includes yt-dlp only for operator-side download). The API only accepts jobs for known catalog ids — list them with `GET /api/v1/matches`.
+
+## 2. Run one-shot deployment script
 
 ```bash
-az deployment group create \
-  --resource-group football-hl-rg \
-  --template-file infra/bicep/main.bicep \
-  --parameters \
-    containerImage='footballhlacr.azurecr.io/football-analyzer:latest' \
-    apiKeys='<your-api-key>' \
-    assemblyaiApiKey='<your-assemblyai-key>' \
-    apiFootballKey='<your-api-football-key>' \
-    openaiApiKey='<your-openai-key>'
+chmod +x scripts/deploy_azure_env.sh
+./scripts/deploy_azure_env.sh
 ```
 
-This provisions: Storage Account (blob/queue/table), ACR, ACA environment, API + Worker container apps, Log Analytics.
+The script handles:
+- provider registration
+- resource group + key vault creation (if missing)
+- granting caller `Key Vault Secrets Officer` (if missing)
+- writing secrets to Key Vault
+- Bicep deployment
+- image build/push
+- API + worker restart
 
-## 3. Build & Push Docker Image
-
-```bash
-# Get ACR login server from deployment output
-ACR_SERVER=$(az deployment group show \
-  --resource-group football-hl-rg \
-  --name main \
-  --query 'properties.outputs.acrLoginServer.value' -o tsv)
-
-# Login to ACR
-az acr login --name footballhlacr
-
-# Build and push
-docker build -t $ACR_SERVER/football-analyzer:latest .
-docker push $ACR_SERVER/football-analyzer:latest
-```
-
-## 4. Restart Container Apps (pick up new image)
-
-```bash
-az containerapp revision restart \
-  --name football-hl-api \
-  --resource-group football-hl-rg
-
-az containerapp revision restart \
-  --name football-hl-worker \
-  --resource-group football-hl-rg
-```
-
-## 5. Verify
+## 6. Verify
 
 ```bash
 # Get API URL
 API_URL=$(az deployment group show \
-  --resource-group football-hl-rg \
-  --name main \
+  --resource-group "$RG_NAME" \
+  --name "$DEPLOYMENT_NAME" \
   --query 'properties.outputs.apiUrl.value' -o tsv)
 
 # Health check
 curl $API_URL/api/v1/health
 
-# Submit a job
+# List catalog matches
+curl -s $API_URL/api/v1/matches \
+  -H "X-API-Key: <value from api-keys secret>"
+
+# Submit a job (match_id from the catalog)
 curl -X POST $API_URL/api/v1/jobs \
-  -H "X-API-Key: <your-api-key>" \
+  -H "X-API-Key: <value from api-keys secret>" \
   -H "Content-Type: application/json" \
-  -d '{"query": "Liverpool vs Man City 2025"}'
+  -d '{"match_id": "istanbul-2005", "highlights_query": "goals and cards"}'
 ```
 
 ## Updating
@@ -81,8 +76,5 @@ curl -X POST $API_URL/api/v1/jobs \
 After code changes:
 
 ```bash
-docker build -t $ACR_SERVER/football-analyzer:latest .
-docker push $ACR_SERVER/football-analyzer:latest
-az containerapp update --name football-hl-api --resource-group football-hl-rg --image $ACR_SERVER/football-analyzer:latest
-az containerapp update --name football-hl-worker --resource-group football-hl-rg --image $ACR_SERVER/football-analyzer:latest
+./scripts/deploy_azure_env.sh
 ```

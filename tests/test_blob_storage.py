@@ -70,7 +70,8 @@ def test_local_path_downloads_blob_to_temp(
     blob_bytes = b"fake video content"
     container_client = mock_blob_service.get_container_client.return_value
     blob_client = container_client.get_blob_client.return_value
-    blob_client.download_blob.return_value.readall.return_value = blob_bytes
+    stream = blob_client.download_blob.return_value
+    stream.readinto.side_effect = lambda f: f.write(blob_bytes)
 
     path = blob_storage.local_path("vid123", "video.mp4")
     assert path.exists()
@@ -83,7 +84,8 @@ def test_local_path_uses_cache(
     blob_bytes = b"fake video content"
     container_client = mock_blob_service.get_container_client.return_value
     blob_client = container_client.get_blob_client.return_value
-    blob_client.download_blob.return_value.readall.return_value = blob_bytes
+    stream = blob_client.download_blob.return_value
+    stream.readinto.side_effect = lambda f: f.write(blob_bytes)
 
     path1 = blob_storage.local_path("vid123", "video.mp4")
     path2 = blob_storage.local_path("vid123", "video.mp4")

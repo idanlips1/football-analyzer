@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
 
+from models.job import Job, JobResult, JobStatus
 from utils.job_queue import InMemoryQueue
 from utils.job_store import InMemoryJobStore
+
+_VALID_MATCH = "istanbul-2005"
 
 
 @pytest.fixture()
@@ -22,13 +26,14 @@ def queue() -> InMemoryQueue:
 
 
 @pytest.fixture()
-def client(store: InMemoryJobStore, queue: InMemoryQueue) -> TestClient:
+def client(store: InMemoryJobStore, queue: InMemoryQueue) -> Iterator[TestClient]:
     with (
         patch("api.app.API_KEYS", ["test-key"]),
         patch("api.dependencies._store", store),
         patch("api.dependencies._queue", queue),
     ):
         from api.app import create_app
+
         app = create_app()
         yield TestClient(app)
 
@@ -36,10 +41,20 @@ def client(store: InMemoryJobStore, queue: InMemoryQueue) -> TestClient:
 HEADERS = {"X-API-Key": "test-key"}
 
 
+def test_list_matches(client: TestClient) -> None:
+    response = client.get("/api/v1/matches", headers=HEADERS)
+    assert response.status_code == 200
+    data = response.json()
+    assert "matches" in data
+    assert len(data["matches"]) >= 1
+    ids = {m["match_id"] for m in data["matches"]}
+    assert _VALID_MATCH in ids
+
+
 def test_create_job(client: TestClient, queue: InMemoryQueue) -> None:
     response = client.post(
         "/api/v1/jobs",
-        json={"query": "Liverpool vs City goals"},
+        json={"match_id": _VALID_MATCH, "highlights_query": "goals"},
         headers=HEADERS,
     )
     assert response.status_code == 202
@@ -49,13 +64,26 @@ def test_create_job(client: TestClient, queue: InMemoryQueue) -> None:
     assert "poll_url" in data
     msg = queue.receive()
     assert msg is not None
-    assert msg.body["query"] == "Liverpool vs City goals"
+    assert msg.body["match_id"] == _VALID_MATCH
+    assert msg.body["highlights_query"] == "goals"
+
+
+def test_create_job_unknown_match(client: TestClient) -> None:
+    response = client.post(
+        "/api/v1/jobs",
+        json={"match_id": "not-a-real-id-xyz"},
+        headers=HEADERS,
+    )
+    assert response.status_code == 400
 
 
 def test_create_job_with_webhook(client: TestClient) -> None:
     response = client.post(
         "/api/v1/jobs",
-        json={"query": "test", "webhook_url": "https://example.com/hook"},
+        json={
+            "match_id": _VALID_MATCH,
+            "webhook_url": "https://example.com/hook",
+        },
         headers=HEADERS,
     )
     assert response.status_code == 202
@@ -63,7 +91,9 @@ def test_create_job_with_webhook(client: TestClient) -> None:
 
 def test_get_job_found(client: TestClient) -> None:
     response = client.post(
-        "/api/v1/jobs", json={"query": "test"}, headers=HEADERS
+        "/api/v1/jobs",
+        json={"match_id": _VALID_MATCH},
+        headers=HEADERS,
     )
     job_id = response.json()["job_id"]
 
@@ -85,7 +115,47 @@ def test_list_jobs_empty(client: TestClient) -> None:
 
 
 def test_list_jobs_with_results(client: TestClient) -> None:
-    client.post("/api/v1/jobs", json={"query": "q1"}, headers=HEADERS)
-    client.post("/api/v1/jobs", json={"query": "q2"}, headers=HEADERS)
+    client.post(
+        "/api/v1/jobs",
+        json={"match_id": _VALID_MATCH},
+        headers=HEADERS,
+    )
+    client.post(
+        "/api/v1/jobs",
+        json={"match_id": "barcelona-psg-2017"},
+        headers=HEADERS,
+    )
     response = client.get("/api/v1/jobs", headers=HEADERS)
     assert len(response.json()["jobs"]) == 2
+
+
+def test_create_job_with_kickoff_overrides_bypasses_cache(
+    client: TestClient,
+    store: InMemoryJobStore,
+) -> None:
+    cached = Job(
+        match_id=_VALID_MATCH,
+        highlights_query="goals",
+        query="label",
+        status=JobStatus.COMPLETED,
+    )
+    cached.result = JobResult(
+        download_url="https://example.com/old.mp4",
+        duration_seconds=90.0,
+        clip_count=3,
+        expires_at="2099-01-01T00:00:00+00:00",
+    )
+    store.create(cached)
+
+    response = client.post(
+        "/api/v1/jobs",
+        json={
+            "match_id": _VALID_MATCH,
+            "highlights_query": "goals",
+            "kickoff_first_half": 120.0,
+            "kickoff_second_half": 3900.0,
+        },
+        headers=HEADERS,
+    )
+    assert response.status_code == 202
+    assert response.json()["job_id"] != cached.job_id

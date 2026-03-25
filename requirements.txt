@@ -3,7 +3,6 @@ assemblyai
 librosa
 ffmpeg-python
 python-dotenv
-yt-dlp
 
 # API (optional)
 fastapi

@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from config.settings import PIPELINE_WORKSPACE
 from pipeline.transcription import transcribe
 from utils.logger import setup_logging
+from utils.storage import LocalStorage
 
 
 def main() -> None:
@@ -57,7 +58,8 @@ def main() -> None:
     print("  AssemblyAI transcription takes ~15-30 minutes for a full match")
     print()
 
-    result = transcribe(metadata)
+    storage = LocalStorage(root=PIPELINE_WORKSPACE)
+    result = transcribe(metadata, storage)
 
     print()
     print("=== DONE ===")

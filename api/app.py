@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from api.routes import jobs
+from api.routes import catalog, jobs
 from config.settings import API_KEYS
 
 
@@ -33,6 +33,7 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     app.include_router(jobs.router, prefix="/api/v1")
+    app.include_router(catalog.router, prefix="/api/v1")
 
     return app
 

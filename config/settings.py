@@ -74,7 +74,17 @@ API_FOOTBALL_KEY: str = os.environ.get("API_FOOTBALL_KEY", "")
 API_FOOTBALL_BASE_URL: str = "https://v3.football.api-sports.io"
 
 # --- Azure deployment ---
-STORAGE_BACKEND: str = os.environ.get("STORAGE_BACKEND", "local")  # "local" | "azure"
+# Prefer Azure whenever a connection string is set (deployed environments). Override with
+# STORAGE_BACKEND=local for dev without touching Key Vault / secrets.
+_AZ_CONN = os.environ.get("AZURE_STORAGE_CONNECTION_STRING", "").strip()
+_STORAGE_EXPLICIT = os.environ.get("STORAGE_BACKEND", "").strip().lower()
+if _STORAGE_EXPLICIT in ("azure", "local"):
+    STORAGE_BACKEND: str = _STORAGE_EXPLICIT
+elif _AZ_CONN:
+    STORAGE_BACKEND = "azure"
+else:
+    STORAGE_BACKEND = "local"
+
 AZURE_STORAGE_CONNECTION_STRING: str = os.environ.get("AZURE_STORAGE_CONNECTION_STRING", "")
 AZURE_BLOB_CONTAINER_VIDEOS: str = "videos"
 AZURE_BLOB_CONTAINER_PIPELINE: str = "pipeline"

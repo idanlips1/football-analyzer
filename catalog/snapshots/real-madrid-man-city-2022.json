@@ -1,0 +1,51 @@
+{
+  "video_id": "real-madrid-man-city-2022",
+  "fixture_id": 0,
+  "event_count": 4,
+  "events": [
+    {
+      "minute": 73,
+      "extra_minute": null,
+      "half": "2nd Half",
+      "event_type": "goal",
+      "team": "Manchester City",
+      "player": "De Bruyne",
+      "assist": null,
+      "score": "0 - 1",
+      "detail": "Normal Goal"
+    },
+    {
+      "minute": 90,
+      "extra_minute": null,
+      "half": "2nd Half",
+      "event_type": "goal",
+      "team": "Real Madrid",
+      "player": "Rodrygo",
+      "assist": null,
+      "score": "1 - 1",
+      "detail": "Normal Goal"
+    },
+    {
+      "minute": 91,
+      "extra_minute": null,
+      "half": "2nd Half",
+      "event_type": "goal",
+      "team": "Real Madrid",
+      "player": "Rodrygo",
+      "assist": null,
+      "score": "2 - 1",
+      "detail": "Normal Goal"
+    },
+    {
+      "minute": 95,
+      "extra_minute": null,
+      "half": "Extra Time",
+      "event_type": "goal",
+      "team": "Real Madrid",
+      "player": "Benzema",
+      "assist": null,
+      "score": "3 - 1",
+      "detail": "Normal Goal"
+    }
+  ]
+}

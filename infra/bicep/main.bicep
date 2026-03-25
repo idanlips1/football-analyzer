@@ -7,21 +7,8 @@ param location string = resourceGroup().location
 @description('Container image for API and Worker')
 param containerImage string
 
-@description('API keys (comma-separated)')
-@secure()
-param apiKeys string
-
-@description('AssemblyAI API key')
-@secure()
-param assemblyaiApiKey string
-
-@description('API Football key')
-@secure()
-param apiFootballKey string
-
-@description('OpenAI API key')
-@secure()
-param openaiApiKey string
+@description('Existing Azure Key Vault name containing app secrets')
+param keyVaultName string
 
 // Storage Account — blob, queue, table
 resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
@@ -78,6 +65,10 @@ resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
   properties: { adminUserEnabled: true }
 }
 
+resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
+  name: keyVaultName
+}
+
 // Log Analytics for Container Apps
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
   name: '${baseName}-logs'
@@ -116,17 +107,45 @@ var sharedEnv = [
 
 var sharedSecrets = [
   { name: 'storage-conn', value: storageConnectionString }
-  { name: 'assemblyai-key', value: assemblyaiApiKey }
-  { name: 'api-football-key', value: apiFootballKey }
-  { name: 'openai-key', value: openaiApiKey }
-  { name: 'api-keys', value: apiKeys }
+  {
+    name: 'assemblyai-key'
+    keyVaultUrl: 'https://${keyVault.name}.vault.azure.net/secrets/assemblyai-api-key'
+    identity: 'system'
+  }
+  {
+    name: 'api-football-key'
+    keyVaultUrl: 'https://${keyVault.name}.vault.azure.net/secrets/api-football-key'
+    identity: 'system'
+  }
+  {
+    name: 'openai-key'
+    keyVaultUrl: 'https://${keyVault.name}.vault.azure.net/secrets/openai-api-key'
+    identity: 'system'
+  }
+  {
+    name: 'api-keys'
+    keyVaultUrl: 'https://${keyVault.name}.vault.azure.net/secrets/api-keys'
+    identity: 'system'
+  }
   { name: 'acr-password', value: acr.listCredentials().passwords[0].value }
 ]
+
+var acrPullRoleId = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  '7f951dda-4ed3-4680-a7ca-43fe172d538d'
+)
+var kvSecretsUserRoleId = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  '4633458b-17de-408a-b874-0445c86b69e6'
+)
 
 // API Container App
 resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
   name: '${baseName}-api'
   location: location
+  identity: {
+    type: 'SystemAssigned'
+  }
   properties: {
     managedEnvironmentId: acaEnv.id
     configuration: {
@@ -168,6 +187,9 @@ resource apiApp 'Microsoft.App/containerApps@2024-03-01' = {
 resource workerApp 'Microsoft.App/containerApps@2024-03-01' = {
   name: '${baseName}-worker'
   location: location
+  identity: {
+    type: 'SystemAssigned'
+  }
   properties: {
     managedEnvironmentId: acaEnv.id
     configuration: {
@@ -205,6 +227,46 @@ resource workerApp 'Microsoft.App/containerApps@2024-03-01' = {
         maxReplicas: 1
       }
     }
+  }
+}
+
+resource apiAcrPullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(acr.id, apiApp.id, acrPullRoleId)
+  scope: acr
+  properties: {
+    roleDefinitionId: acrPullRoleId
+    principalId: apiApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource workerAcrPullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(acr.id, workerApp.id, acrPullRoleId)
+  scope: acr
+  properties: {
+    roleDefinitionId: acrPullRoleId
+    principalId: workerApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource apiKvSecretsRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(keyVault.id, apiApp.id, kvSecretsUserRoleId)
+  scope: keyVault
+  properties: {
+    roleDefinitionId: kvSecretsUserRoleId
+    principalId: apiApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource workerKvSecretsRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(keyVault.id, workerApp.id, kvSecretsUserRoleId)
+  scope: keyVault
+  properties: {
+    roleDefinitionId: kvSecretsUserRoleId
+    principalId: workerApp.identity.principalId
+    principalType: 'ServicePrincipal'
   }
 }
 

@@ -35,6 +35,8 @@ class JobResult:
 @dataclass
 class Job:
     job_id: str = field(default_factory=lambda: uuid4().hex[:12])
+    match_id: str = ""
+    highlights_query: str = "full match highlights"
     query: str = ""
     status: JobStatus = JobStatus.QUEUED
     progress: str | None = None
