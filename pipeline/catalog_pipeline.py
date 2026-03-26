@@ -89,7 +89,7 @@ def run_catalog_pipeline(
 
     # 1. Interpret NLP Query
     try:
-        hq = interpret_query(highlights_query, game)
+        hq = interpret_query(highlights_query, game, [])
     except Exception as exc:
         log.warning("Interpreter failed: %s", exc)
         hq = HighlightQuery(query_type=QueryType.FULL_SUMMARY, raw_query=highlights_query)

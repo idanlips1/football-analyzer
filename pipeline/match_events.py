@@ -92,9 +92,6 @@ def fetch_match_events(metadata: dict[str, Any], storage: StorageBackend) -> dic
     return result
 
 
-
-
-
 def fetch_filtered_events(metadata: dict[str, Any], hq: Any) -> dict[str, Any]:
     """Fetch specific events from API-Football dynamically via HighlightQuery params.
     Does not cache to disk."""
@@ -132,6 +129,7 @@ def fetch_filtered_events(metadata: dict[str, Any], hq: Any) -> dict[str, Any]:
 
     elapsed = time.monotonic() - t0
     log.info("API-Football filtered events response received in %.1f s", elapsed)
+    log.debug("API-Football raw response body:\n%s", json.dumps(body, indent=2))
 
     errors = body.get("errors")
     if errors:
@@ -173,6 +171,7 @@ def _fetch_events(fixture_id: int) -> list[dict[str, Any]]:
         raise MatchEventsError(f"API request failed for fixture {fixture_id}: {exc}") from exc
     elapsed = time.monotonic() - t0
     log.info("API-Football events response received in %.1f s", elapsed)
+    log.debug("API-Football raw response body:\n%s", json.dumps(body, indent=2))
 
     errors = body.get("errors")
     if errors:
@@ -219,8 +218,28 @@ def _determine_half(elapsed: int) -> str:
     return "Extra Time"
 
 
+def _build_canonical_names(raw_events: list[dict[str, Any]]) -> dict[int, str]:
+    """Map each player/assist ID to a single canonical name.
+
+    API-Football sometimes returns different spellings for the same player ID
+    (e.g. "P. Neto" for goals and "Pedro Neto" for cards).  We pick the longest
+    name variant as canonical — it's the most informative.
+    """
+    id_to_names: dict[int, set[str]] = {}
+    for raw in raw_events:
+        for key in ("player", "assist"):
+            info = raw.get(key, {}) or {}
+            pid = info.get("id")
+            name = info.get("name")
+            if pid and name:
+                id_to_names.setdefault(pid, set()).add(name)
+
+    return {pid: max(names, key=len) for pid, names in id_to_names.items()}
+
+
 def _parse_events(raw_events: list[dict[str, Any]]) -> list[MatchEvent]:
     """Convert raw API-Football event dicts into :class:`MatchEvent` objects."""
+    canonical = _build_canonical_names(raw_events)
     parsed: list[MatchEvent] = []
     for raw in raw_events:
         time_info = raw.get("time", {})
@@ -233,7 +252,16 @@ def _parse_events(raw_events: list[dict[str, Any]]) -> list[MatchEvent]:
 
         api_type: str = raw.get("type", "")
         detail: str = raw.get("detail", "")
-        assist_name: str | None = assist_info.get("name")
+
+        player_id = player_info.get("id")
+        fallback_player = player_info.get("name", "")
+        player_name = canonical.get(player_id, fallback_player) if player_id else fallback_player
+
+        assist_id = assist_info.get("id")
+        raw_assist: str | None = assist_info.get("name")
+        assist_name = (
+            canonical.get(assist_id, raw_assist) if assist_id and raw_assist else raw_assist
+        )
 
         parsed.append(
             MatchEvent(
@@ -242,7 +270,7 @@ def _parse_events(raw_events: list[dict[str, Any]]) -> list[MatchEvent]:
                 half=_determine_half(elapsed),
                 event_type=_map_event_type(api_type, detail),
                 team=team_info.get("name", ""),
-                player=player_info.get("name", ""),
+                player=player_name,
                 assist=assist_name,
                 score="",
                 detail=detail,

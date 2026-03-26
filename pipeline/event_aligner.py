@@ -187,6 +187,7 @@ def align_events(
                 estimated_video_ts=estimated,
                 refined_video_ts=refined,
                 confidence=confidence,
+                assist=event.assist,
             )
         )
 

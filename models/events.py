@@ -152,6 +152,7 @@ class AlignedEvent:
     estimated_video_ts: float  # seconds — from kickoff offset formula
     refined_video_ts: float  # seconds — after audio energy refinement
     confidence: float  # 0.0–1.0, how well the audio corroborated the estimate
+    assist: str | None = None  # player who assisted (goals only)
 
     def to_dict(self) -> dict[str, Any]:
         d = dataclasses.asdict(self)

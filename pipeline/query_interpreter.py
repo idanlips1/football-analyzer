@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 from typing import cast
+from urllib.parse import urlparse
 
 from openai import OpenAI
 
 from config.settings import OPENAI_API_KEY, OPENAI_MODEL
-from models.events import EventType
+from models.events import AlignedEvent, EventType
 from models.game import GameState
 from models.highlight_query import HighlightQuery, QueryType
 from utils.logger import get_logger
@@ -27,25 +28,46 @@ JSON schema:
 {
   "query_type": "full_summary" | "event_filter" | "player",
   "event_types": [list of event type strings] | null,
-  "player_name": "exact player name" | null,
-  "api_player_id": 12345 | null,
-  "api_team_id": 123 | null,
-  "api_event_type": "Goal" | "Card" | "subst" | "Var" | null
+  "player_name": "exact player name from the provided list" | null,
+  "minute_from": integer | null,
+  "minute_to": integer | null
 }
 
-Valid event_type strings: goal, own_goal, penalty, red_card, yellow_card, var_review,
-card, near_miss, save, shot_on_target, free_kick, corner, substitution, other
+Valid event_type strings:
+  goal, own_goal, penalty, red_card, yellow_card, var_review,
+  card, near_miss, save, shot_on_target, free_kick, corner, substitution, other
 
 Rules:
-- For general/summary queries → use full_summary
-- For event-type queries (e.g. "just goals", "cards and VAR") → use event_filter + event_types.
-  AND set api_event_type to the closest match if strictly one type (Goal, Card, subst, Var).
-  If multiple types, leave api_event_type null.
-- For player queries (e.g. "Salah moments") → use player AND player_name
-  AND set api_player_id to the numerical ID from the provided list.
+- General / full-match queries (e.g. "best moments", "highlights") → full_summary
+- Event-type queries (e.g. "just goals", "cards and VAR") → event_filter + event_types
+- Player queries (e.g. "Salah moments") → player + player_name (exact name from list)
+  Player highlights include ALL events involving that player — goals, cards,
+  substitutions, assists — not just goals.
+
+Time / half filtering (applies to ANY query_type above):
+- "first half" → minute_from=1, minute_to=45
+- "second half" → minute_from=46, minute_to=90
+- "last 10 minutes" → minute_from=80, minute_to=90
+- Explicit ranges like "between 20 and 60 minutes" → minute_from=20, minute_to=60
+- If no time constraint is mentioned, leave both null.
+- Extra-time minutes (e.g. 45+2) count under the half they belong to:
+  45+anything is first half (≤45), 90+anything is second half (≤90).
 
 Return ONLY valid JSON, nothing else.\
 """
+
+# Maps our EventType string values to API-Football's event type parameter.
+# Used to derive api_event_type in code rather than asking the LLM to know API internals.
+_EVENTTYPE_TO_API_TYPE: dict[str, str] = {
+    "goal": "Goal",
+    "own_goal": "Goal",
+    "penalty": "Goal",
+    "yellow_card": "Card",
+    "red_card": "Card",
+    "card": "Card",
+    "substitution": "subst",
+    "var_review": "Var",
+}
 
 
 def _get_players_map(fixture_id: int) -> dict[str, int]:
@@ -63,9 +85,13 @@ def _get_players_map(fixture_id: int) -> dict[str, int]:
             "x-rapidapi-host": "v3.football.api-sports.io",
         },
     )
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.netloc != "v3.football.api-sports.io":
+        log.warning("Refusing lineup fetch from unexpected host: %s", url)
+        return {}
     players_map = {}
     try:
-        with urllib.request.urlopen(req) as resp:
+        with urllib.request.urlopen(req) as resp:  # nosec B310
             body = json.loads(resp.read().decode())
             for team in body.get("response", []):
                 for start in team.get("startXI", []):
@@ -84,6 +110,7 @@ def _get_players_map(fixture_id: int) -> dict[str, int]:
 def interpret_query(
     raw_query: str,
     game: GameState,
+    aligned_events: list[AlignedEvent],
 ) -> HighlightQuery:
     """Interpret *raw_query* using OpenAI and return a structured HighlightQuery.
 
@@ -95,9 +122,18 @@ def interpret_query(
 
     players_map = _get_players_map(game.fixture_id)
 
+    # Collect player names from lineup API and from the already-aligned events
+    player_names_set: set[str] = set(players_map.keys())
+    for event in aligned_events:
+        if event.player:
+            player_names_set.add(event.player)
+        if event.assist:
+            player_names_set.add(event.assist)
+    player_names = sorted(player_names_set)
+
     user_message = (
         f"Game: {game.home_team} vs {game.away_team} ({game.date})\n"
-        f"Available players (Name->ID): {json.dumps(players_map)}\n\n"
+        f"Available players: {json.dumps(player_names)}\n\n"
         f"User query: {raw_query}"
     )
 
@@ -120,14 +156,27 @@ def interpret_query(
         if raw_event_types:
             event_types = [EventType(et) for et in cast(list[str], raw_event_types)]
 
+        player_name: str | None = data.get("player_name")  # type: ignore[assignment]
+
+        # Derive API-level optimisation fields from the structured output — the LLM
+        # doesn't need to know API-Football internals or numerical IDs.
+        api_player_id: int | None = players_map.get(str(player_name)) if player_name else None
+        api_event_type: str | None = None
+        if event_types and len(event_types) == 1:
+            api_event_type = _EVENTTYPE_TO_API_TYPE.get(event_types[0].value)
+
+        minute_from: int | None = data.get("minute_from")  # type: ignore[assignment]
+        minute_to: int | None = data.get("minute_to")  # type: ignore[assignment]
+
         return HighlightQuery(
             query_type=query_type,
             event_types=event_types,
-            player_name=data.get("player_name"),  # type: ignore[arg-type]
-            api_team_id=data.get("api_team_id"),  # type: ignore[arg-type]
-            api_player_id=data.get("api_player_id"),  # type: ignore[arg-type]
-            api_event_type=data.get("api_event_type"),  # type: ignore[arg-type]
+            player_name=player_name,
+            api_player_id=api_player_id,
+            api_event_type=api_event_type,
             raw_query=raw_query,
+            minute_from=minute_from,
+            minute_to=minute_to,
         )
     except Exception as exc:
         log.warning("Query interpretation failed (%s) — falling back to FULL_SUMMARY", exc)
