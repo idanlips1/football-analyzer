@@ -109,6 +109,16 @@
       "season_label": "2023-24",
       "events_snapshot": "man-united-liverpool-facup-2024",
       "fixture_id": null
+    },
+    {
+      "match_id": "chelsea-hull-facup-2026",
+      "title": "Chelsea vs Hull City — Emirates FA Cup 2025-26",
+      "home_team": "Chelsea",
+      "away_team": "Hull City",
+      "competition": "Emirates FA Cup",
+      "season_label": "2025-26",
+      "events_snapshot": "chelsea-hull-facup-2026",
+      "fixture_id": null
     }
   ]
 }

@@ -65,9 +65,15 @@ def fetch_match_events(metadata: dict[str, Any], storage: StorageBackend) -> dic
         raise MatchEventsError("metadata is missing 'fixture_id' — cannot fetch match events")
 
     if cache_path.exists():
-        log.info("Match events cache hit for fixture %s", fixture_id)
         cached: dict[str, Any] = storage.read_json(video_id, MATCH_EVENTS_FILENAME)
-        return cached
+        if cached.get("fixture_id") == fixture_id:
+            log.info("Match events cache hit for fixture %s", fixture_id)
+            return cached
+        log.info(
+            "Ignoring stale match_events.json (cached fixture_id=%s, requested %s)",
+            cached.get("fixture_id"),
+            fixture_id,
+        )
 
     if not API_FOOTBALL_KEY:
         raise MatchEventsError("API_FOOTBALL_KEY is not set — add it to your .env file")

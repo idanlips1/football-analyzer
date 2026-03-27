@@ -253,6 +253,19 @@ class TestFetchMatchEvents:
         assert mock_fetch.call_count == 1
 
     @patch("pipeline.match_events.API_FOOTBALL_KEY", "test_key")
+    @patch("pipeline.match_events._fetch_events", return_value=SAMPLE_RAW_EVENTS)
+    def test_fixture_id_change_invalidates_cache(
+        self,
+        mock_fetch: MagicMock,
+        tmp_storage: LocalStorage,
+    ) -> None:
+        meta1 = _build_metadata(fixture_id=111)
+        fetch_match_events(meta1, tmp_storage)
+        meta2 = _build_metadata(fixture_id=222)
+        fetch_match_events(meta2, tmp_storage)
+        assert mock_fetch.call_count == 2
+
+    @patch("pipeline.match_events.API_FOOTBALL_KEY", "test_key")
     @patch("pipeline.match_events._fetch_events", return_value=[])
     def test_empty_events(
         self,

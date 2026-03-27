@@ -108,6 +108,17 @@ def _confirm_kickoffs_interactive(
     return first, second
 
 
+def _read_catalog_snapshot_event_count(snapshot_key: str) -> int | None:
+    """Return ``event_count`` from a bundled snapshot file, or ``None`` if missing."""
+    from catalog.loader import snapshot_json_path
+
+    path = snapshot_json_path(snapshot_key)
+    if not path.is_file():
+        return None
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return int(data.get("event_count", 0) or 0)
+
+
 def _pick_match_interactive() -> str | None:
     matches = list_matches()
     if not matches:
@@ -129,10 +140,77 @@ def _pick_match_interactive() -> str | None:
     return None
 
 
+def _resolve_team_id_interactive(label: str, name: str) -> int | None:
+    """Resolve API-Football team id; prompt when search returns several plausible clubs."""
+    url = f"{API_FOOTBALL_BASE_URL}/teams?search={urllib.parse.quote(name)}"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "x-rapidapi-key": API_FOOTBALL_KEY,
+            "x-rapidapi-host": "v3.football.api-sports.io",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:  # nosec B310
+            body = json.loads(resp.read().decode())
+    except Exception as exc:
+        print(f"  Team search failed for {name!r}: {exc}")
+        return None
+    results = body.get("response", [])
+    if not results:
+        print(f"  No team found for {name!r}.")
+        return None
+    candidates = [(int(r["team"]["id"]), str(r["team"]["name"])) for r in results]
+    name_lower = name.lower()
+    substring_hits = [
+        (tid, tname)
+        for tid, tname in candidates
+        if name_lower in tname.lower() or tname.lower() in name_lower
+    ]
+    if len(substring_hits) == 1:
+        return substring_hits[0][0]
+    if len(substring_hits) > 1:
+        print(f"\n  Several clubs match {label!r} ({name!r}). Pick the correct one:\n")
+        for i, (_tid, tname) in enumerate(substring_hits, 1):
+            print(f"  [{i}] {tname}  (id {_tid})")
+        raw = input("\n  Pick a number (or 'q' to abort): ").strip()
+        if raw.lower() == "q":
+            return None
+        try:
+            idx = int(raw) - 1
+            if 0 <= idx < len(substring_hits):
+                return substring_hits[idx][0]
+        except ValueError:
+            pass
+        print("  Invalid choice.")
+        return None
+    close = difflib.get_close_matches(name, [t for _, t in candidates], n=1, cutoff=0.6)
+    if close:
+        return int(next(tid for tid, t in candidates if t == close[0]))
+    if len(candidates) > 1:
+        print(f"\n  Several clubs match {label!r} ({name!r}). Pick the correct one:\n")
+        for i, (tid, tname) in enumerate(candidates, 1):
+            print(f"  [{i}] {tname}  (id {tid})")
+        raw = input("\n  Pick a number (or 'q' to abort): ").strip()
+        if raw.lower() == "q":
+            return None
+        try:
+            idx = int(raw) - 1
+            if 0 <= idx < len(candidates):
+                return candidates[idx][0]
+        except ValueError:
+            pass
+        print("  Invalid choice.")
+        return None
+    return int(candidates[0][0])
+
+
 def _pick_fixture_interactive(
     home_team: str,
     away_team: str,
     season_label: str,
+    *,
+    preamble: str | None = None,
 ) -> int | None:
     """Search API-Football for fixtures matching these teams/season. Operator picks.
 
@@ -142,37 +220,11 @@ def _pick_fixture_interactive(
         print("  API_FOOTBALL_KEY not set — cannot search for fixture.")
         return None
 
-    def _search_team(name: str) -> int | None:
-        url = f"{API_FOOTBALL_BASE_URL}/teams?search={urllib.parse.quote(name)}"
-        req = urllib.request.Request(
-            url,
-            headers={
-                "x-rapidapi-key": API_FOOTBALL_KEY,
-                "x-rapidapi-host": "v3.football.api-sports.io",
-            },
-        )
-        try:
-            with urllib.request.urlopen(req) as resp:  # nosec B310
-                body = json.loads(resp.read().decode())
-        except Exception as exc:
-            print(f"  Team search failed for {name!r}: {exc}")
-            return None
-        results = body.get("response", [])
-        if not results:
-            print(f"  No team found for {name!r}.")
-            return None
-        candidates = [(r["team"]["id"], r["team"]["name"]) for r in results]
-        name_lower = name.lower()
-        for tid, tname in candidates:
-            if name_lower in tname.lower() or tname.lower() in name_lower:
-                return int(tid)
-        close = difflib.get_close_matches(name, [t for _, t in candidates], n=1, cutoff=0.6)
-        if close:
-            return int(next(tid for tid, t in candidates if t == close[0]))
-        return int(candidates[0][0])
+    if preamble:
+        print(preamble)
 
-    home_id = _search_team(home_team)
-    away_id = _search_team(away_team)
+    home_id = _resolve_team_id_interactive("home", home_team)
+    away_id = _resolve_team_id_interactive("away", away_team)
     if home_id is None or away_id is None:
         return None
 
@@ -279,7 +331,19 @@ def _run_catalog_ingest(
     if k_first is None or k_second is None:
         raise CatalogPipelineError("Could not confirm kickoff timestamps.")
 
-    if not entry_events_snapshot:
+    use_catalog_events_snapshot = bool(entry_events_snapshot)
+    if entry_events_snapshot:
+        snap_count = _read_catalog_snapshot_event_count(str(entry_events_snapshot))
+        if snap_count is not None and snap_count == 0:
+            print(
+                "\n  Catalog events snapshot exists but contains 0 events — "
+                "will use API-Football once you pick a fixture."
+            )
+            use_catalog_events_snapshot = False
+            metadata.pop("events_snapshot", None)
+            storage.write_json(match_id, "metadata.json", metadata)
+
+    if not use_catalog_events_snapshot:
         print("\n[4/7] Searching API-Football for fixture…")
         picked = _pick_fixture_interactive(
             metadata["home_team"],
@@ -291,6 +355,7 @@ def _run_catalog_ingest(
         else:
             print(f"  Fixture {picked} selected.")
             metadata["fixture_id"] = picked
+            storage.write_json(match_id, "metadata.json", metadata)
     else:
         print("\n[4/7] Snapshot match — skipping fixture selection.")
 
@@ -315,6 +380,44 @@ def _run_catalog_ingest(
 
     print("\n[6/7] Fetching match events…")
     events_data = fetch_match_events(metadata, storage)
+    retry = 0
+    while (
+        not metadata.get("events_snapshot")
+        and events_data.get("event_count", 0) == 0
+        and API_FOOTBALL_KEY
+        and retry < 3
+    ):
+        preamble = (
+            "\n  API-Football returned 0 events for this fixture. When several games "
+            "exist between the same clubs, the wrong fixture is often chosen. "
+            "Pick the correct match below (or 'q' to continue with no events).\n"
+        )
+        alt = _pick_fixture_interactive(
+            metadata["home_team"],
+            metadata["away_team"],
+            metadata.get("season_label", ""),
+            preamble=preamble,
+        )
+        retry += 1
+        if alt is None:
+            break
+        metadata["fixture_id"] = alt
+        storage.write_json(match_id, "metadata.json", metadata)
+        game = GameState(
+            video_id=match_id,
+            home_team=metadata["home_team"],
+            away_team=metadata["away_team"],
+            league=metadata["competition"],
+            date=metadata["season_label"],
+            fixture_id=int(alt),
+            video_filename=metadata.get("video_filename", "match.mp4"),
+            source=str(metadata.get("source", f"catalog:{match_id}")),
+            duration_seconds=float(metadata["duration_seconds"]),
+            kickoff_first_half=float(k_first),
+            kickoff_second_half=float(k_second),
+        )
+        storage.write_json(match_id, "game.json", game.to_dict())
+        events_data = fetch_match_events(metadata, storage)
     print(f"      {events_data.get('event_count', 0)} events loaded.")
 
     print("\n[7/7] Aligning events to video…")

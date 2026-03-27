@@ -241,6 +241,49 @@ class TestIngestFetchesAndAlignsEvents:
 
         mock_pick.assert_not_called()
 
+    def test_empty_catalog_snapshot_triggers_fixture_pick(self, tmp_storage: LocalStorage) -> None:
+        from unittest.mock import patch
+
+        from ingest import _run_catalog_ingest
+
+        fake_metadata = {
+            "video_id": "chelsea-hull-facup-2026",
+            "home_team": "Chelsea",
+            "away_team": "Hull City",
+            "competition": "Emirates FA Cup",
+            "season_label": "2025-26",
+            "fixture_id": None,
+            "video_filename": "match.mp4",
+            "source": "catalog:chelsea-hull-facup-2026",
+            "duration_seconds": 5400.0,
+            "events_snapshot": "chelsea-hull-facup-2026",
+        }
+        fake_transcription = {"kickoff_first_half": 330.0, "kickoff_second_half": 3420.0}
+        fake_events = {"event_count": 3, "events": [{"minute": 1}]}
+
+        with (
+            patch("ingest.ingest_local_catalog_match", return_value=fake_metadata),
+            patch("pipeline.transcription.transcribe", return_value=fake_transcription),
+            patch("ingest._read_catalog_snapshot_event_count", return_value=0),
+            patch("ingest.fetch_match_events", return_value=fake_events) as mock_fetch,
+            patch("ingest.align_events", return_value={"event_count": 0, "events": []}),
+            patch("ingest._pick_fixture_interactive", return_value=888888) as mock_pick,
+            patch("builtins.input", lambda _: "/tmp/fake.mp4"),
+        ):
+            _run_catalog_ingest(
+                "chelsea-hull-facup-2026",
+                tmp_storage,
+                confirm_kickoffs_fn=lambda a, b: (330.0, 3420.0),
+            )
+
+        mock_pick.assert_called_once()
+        mock_fetch.assert_called_once()
+        meta = tmp_storage.read_json("chelsea-hull-facup-2026", "metadata.json")
+        assert meta.get("events_snapshot") is None
+        assert meta.get("fixture_id") == 888888
+        game = tmp_storage.read_json("chelsea-hull-facup-2026", "game.json")
+        assert game["fixture_id"] == 888888
+
 
 class TestPickFixtureInteractive:
     _TEAMS_RESP_HOME = {"response": [{"team": {"id": 40, "name": "Liverpool"}}]}
