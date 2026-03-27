@@ -151,10 +151,10 @@ def cut_clip(
         cmd = [
             "ffmpeg",
             "-y",
-            "-i",
-            str(video_path),
             "-ss",
             f"{start_seconds:.3f}",
+            "-i",
+            str(video_path),
             "-t",
             f"{duration:.3f}",
             "-c",
