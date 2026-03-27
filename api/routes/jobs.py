@@ -49,7 +49,11 @@ async def create_job(request: JobCreateRequest) -> JSONResponse:
             ):
                 return JSONResponse(
                     status_code=200,
-                    content=existing.to_dict(),
+                    content=JobCreateResponse(
+                        job_id=existing.job_id,
+                        status=existing.status.value,
+                        poll_url=f"/api/v1/jobs/{existing.job_id}",
+                    ).model_dump(),
                 )
 
     label = f"{entry.title} — {request.highlights_query}"
