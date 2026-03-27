@@ -4,8 +4,52 @@ Builds a highlights video from a full football match by combining **[API-Footbal
 
 The pipeline is split into two stages:
 
-- **`ingest.py`** — one-time preprocessing per match (download, transcription, event alignment)
-- **`main.py`** — on-demand query REPL (natural-language highlight requests from ingested games)
+- **`ingest.py`** (or **`scripts/ingest_youtube_query.py`** for Azure-oriented upload) — one-time preprocessing per match (download, transcription, event alignment)
+- **`main.py`** — thin client to the API: list matches, submit highlight jobs, poll for results
+
+```mermaid
+flowchart TD
+  subgraph INGEST["Ingest — one-time per match"]
+    A([ingest.py or ingest_youtube_query.py]) --> B([Local mp4 or YouTube URL])
+    B -->|YouTube| C[yt-dlp download]
+    B -->|Local file| D[Copy to storage]
+    C --> D
+    D --> E[FFmpeg — audio extraction]
+    E --> F[AssemblyAI — transcription]
+    F --> G[Kickoff detection]
+    G --> H([User confirms kickoff timestamps])
+    H --> J[Resolve fixture — match_finder / API-Football]
+    J --> K[API-Football — match events]
+    K --> L[Event alignment]
+    L --> M[(pipeline_workspace and/or pipeline blob: game.json, transcription.json, match_events.json, aligned_events.json)]
+    M --> VID[(videos blob: match.mp4 + metadata.json)]
+  end
+
+  subgraph QUERY["main.py — on-demand highlights"]
+    U1([User launches main.py]) --> O[GET /api/v1/matches]
+    O --> P([User picks game and types query])
+    P --> Q[POST /api/v1/jobs]
+    Q -->|cache hit| T
+    Q -->|queued| R[Poll GET /api/v1/jobs/id]
+    R --> S{status?}
+    S -->|processing| R
+    S -->|completed| T([Show download URL])
+    S -->|failed| ERR([Show error])
+  end
+
+  subgraph SERVER["API server and worker"]
+    V[Worker dequeues job] --> W[OpenAI — query interpretation]
+    W --> X[event_filter]
+    X --> Y[clip_builder — windows, merge, budget]
+    Y --> Z[FFmpeg — cut, concat, fade]
+    Z --> AA[(Blob Storage — highlights)]
+  end
+
+  M -.->|ingested JSON| V
+  VID -.->|match video SAS or local path| Y
+  Q --> V
+  AA --> T
+```
 
 ## Prerequisites
 
@@ -63,11 +107,15 @@ Each match only needs to be ingested once. Outputs are cached — re-running ski
 
 ### Step 2 — Generate highlights (on demand)
 
+Point `API_BASE_URL` at your running API (default `http://localhost:8000`), then:
+
 ```bash
 python main.py
 ```
 
-Pick an ingested game from the numbered list, then type natural-language requests:
+The REPL fetches matches from the API, lets you pick a game, submits a highlight job, and prints a **download URL** when the worker finishes (highlights live in Azure Blob Storage when deployed).
+
+Example queries:
 
 ```
 > show me a full summary
@@ -75,8 +123,6 @@ Pick an ingested game from the numbered list, then type natural-language request
 > Salah moments
 > highlights from the second half
 ```
-
-The app interprets your query with an LLM, filters events, cuts clips, and saves a highlights video to `pipeline_workspace/<video_id>/highlights_<slug>.mp4`.
 
 Type `back` to pick a different game, `quit` to exit.
 

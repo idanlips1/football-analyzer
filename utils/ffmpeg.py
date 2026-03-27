@@ -17,10 +17,11 @@ class FFmpegError(Exception):
     """Raised when an ffmpeg conversion fails."""
 
 
-def get_video_duration(video_path: Path) -> float:
-    """Return the duration of a video file in seconds using ffprobe.
+def get_video_duration(video_path: Path | str) -> float:
+    """Return the duration of a video/URL in seconds using ffprobe.
 
-    Raises FFprobeError if ffprobe is not installed or the file cannot be probed.
+    Accepts a local path or an HTTP URL (e.g. Azure SAS).
+    Raises FFprobeError if ffprobe is not installed or the source cannot be probed.
     """
     cmd = [
         "ffprobe",
@@ -97,7 +98,7 @@ def extract_audio(video_path: Path, output_path: Path) -> Path:
 
 
 def cut_clip(
-    video_path: Path,
+    video_path: Path | str,
     start_seconds: float,
     end_seconds: float,
     output_path: Path,
@@ -105,6 +106,9 @@ def cut_clip(
     fade_duration: float = 0.0,
 ) -> Path:
     """Cut a clip from *video_path* between start and end.
+
+    *video_path* may be a local ``Path`` or an HTTP URL (e.g. Azure SAS).
+    FFmpeg handles both transparently via byte-range requests for URLs.
 
     When *fade_duration* > 0, re-encodes with fade-to/from-black on both
     video and audio tracks (libx264 + AAC).  Otherwise uses stream copy

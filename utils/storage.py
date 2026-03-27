@@ -23,6 +23,13 @@ class StorageBackend(Protocol):
     def workspace_path(self, video_id: str) -> Path: ...
     def list_games(self) -> list[str]: ...
     def upload_file(self, video_id: str, filename: str, local_path: Path) -> None: ...
+    def streaming_url(self, video_id: str, filename: str) -> str | None:
+        """Return a direct HTTP URL for *filename* (e.g. Azure SAS), or None.
+
+        When available, FFmpeg can read from the URL via HTTP byte-range
+        requests instead of requiring a full local download.
+        """
+        ...
 
 
 class LocalStorage:
@@ -74,6 +81,9 @@ class LocalStorage:
             import shutil
 
             shutil.copy2(local_path, dest)
+
+    def streaming_url(self, video_id: str, filename: str) -> str | None:
+        return None
 
 
 class BlobStorage:
@@ -150,12 +160,13 @@ class BlobStorage:
             # Clean up partial downloads
             if local.exists():
                 local.unlink()
-            # ResourceNotFoundError means blob doesn't exist yet — caller will create it
-            exc_type = type(exc).__name__
-            if exc_type not in ("ResourceNotFoundError", "HttpResponseError"):
-                raise StorageError(
-                    f"Failed to download {filename!r} for {video_id!r}: {exc}"
-                ) from exc
+            # Fail fast: callers expect a real file path for FFmpeg.
+            # Returning a non-existent temp path causes confusing downstream FFmpeg errors.
+            raise StorageError(f"Failed to download {filename!r} for {video_id!r}: {exc}") from exc
+        if not local.exists() or local.stat().st_size == 0:
+            raise StorageError(
+                f"Downloaded {filename!r} for {video_id!r} is missing/empty at {local}"
+            )
         return local
 
     def workspace_path(self, video_id: str) -> Path:
@@ -202,6 +213,32 @@ class BlobStorage:
         with open(local_file, "rb") as f:
             container.upload_blob(blob_name, f, overwrite=True)
         return blob_name
+
+    def streaming_url(self, video_id: str, filename: str) -> str | None:
+        """Generate a short-lived SAS URL so FFmpeg can read via HTTP byte-ranges."""
+        from datetime import UTC, datetime, timedelta
+
+        from azure.storage.blob import (  # type: ignore[import-untyped]
+            BlobSasPermissions,
+            generate_blob_sas,
+        )
+
+        container_name = self._container_for_file(filename)
+        blob_name = f"{video_id}/{filename}"
+        account_name = self._client.account_name
+        account_key = self._client.credential.account_key
+        sas_token = generate_blob_sas(
+            account_name=account_name,
+            container_name=container_name,
+            blob_name=blob_name,
+            account_key=account_key,
+            permission=BlobSasPermissions(read=True),
+            expiry=datetime.now(UTC) + timedelta(hours=4),
+        )
+        return (
+            f"https://{account_name}.blob.core.windows.net/"
+            f"{container_name}/{blob_name}?{sas_token}"
+        )
 
     def generate_sas_url(self, blob_name: str, expiry_hours: int = 24) -> str:
         """Generate a SAS URL for a highlights blob."""

@@ -36,17 +36,17 @@ class TestLocalStorage:
     def test_list_games_empty_workspace(self, storage: LocalStorage) -> None:
         assert storage.list_games() == []
 
-    def test_list_games_returns_only_complete_games(
+    def test_list_games_returns_only_uploaded_games(
         self, storage: LocalStorage, tmp_path: Path
     ) -> None:
-        # Complete game: both files present
+        # Uploaded game: match.mp4 + metadata.json present
         (tmp_path / "vid_complete").mkdir()
-        (tmp_path / "vid_complete" / "game.json").write_text("{}")
-        (tmp_path / "vid_complete" / "aligned_events.json").write_text("{}")
+        (tmp_path / "vid_complete" / "match.mp4").write_bytes(b"video")
+        (tmp_path / "vid_complete" / "metadata.json").write_text("{}")
 
-        # Partial game: only aligned_events.json
+        # Partial: only metadata.json
         (tmp_path / "vid_partial").mkdir()
-        (tmp_path / "vid_partial" / "aligned_events.json").write_text("{}")
+        (tmp_path / "vid_partial" / "metadata.json").write_text("{}")
 
         # No files
         (tmp_path / "vid_empty").mkdir()
@@ -54,12 +54,11 @@ class TestLocalStorage:
         result = storage.list_games()
         assert result == ["vid_complete"]
 
-    def test_list_games_game_json_only_excluded(
+    def test_list_games_video_only_excluded(
         self, storage: LocalStorage, tmp_path: Path
     ) -> None:
-        # Partial ingest: game.json written but aligned_events.json not yet — must be invisible
         (tmp_path / "vid_partial2").mkdir()
-        (tmp_path / "vid_partial2" / "game.json").write_text("{}")
+        (tmp_path / "vid_partial2" / "match.mp4").write_bytes(b"video")
         assert storage.list_games() == []
 
     def test_list_games_missing_root(self, tmp_path: Path) -> None:
@@ -71,3 +70,6 @@ class TestLocalStorage:
 
         with pytest.raises(StorageError, match="not found"):
             storage.read_json("vid1", "missing.json")
+
+    def test_streaming_url_returns_none(self, storage: LocalStorage) -> None:
+        assert storage.streaming_url("vid1", "match.mp4") is None

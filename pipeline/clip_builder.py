@@ -189,7 +189,12 @@ def build_highlights(
     workspace = storage.workspace_path(game.video_id)
     slug = _query_slug(query)
     output_path = workspace / f"highlights_{slug}.mp4"
-    video_path = workspace / game.video_filename
+
+    # Prefer a streaming URL (Azure SAS) so FFmpeg reads only the bytes it
+    # needs via HTTP range requests, avoiding a full multi-GB download.
+    video_source: str = storage.streaming_url(
+        game.video_id, game.video_filename
+    ) or str(workspace / game.video_filename)
 
     if output_path.exists() and not confirm_overwrite_fn(str(output_path)):
         log.info("Clip builder cache hit — %s already exists", output_path.name)
@@ -241,7 +246,7 @@ def build_highlights(
         )
         try:
             cut_clip(
-                video_path,
+                video_source,
                 clip_dict["clip_start"],
                 clip_dict["clip_end"],
                 clip_path,

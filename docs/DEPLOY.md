@@ -9,7 +9,7 @@
 
 ## 1. Configure environment variables
 
-Use environment variables for secrets and run the deployment script.
+Set deployment-related variables (no API keys — those live in Key Vault; see below).
 
 ```bash
 export RG_NAME="football-hl-rg"
@@ -17,16 +17,12 @@ export LOCATION="israelcentral"   # must match your subscription policy
 export BASE_NAME="football-hl"
 export KV_NAME="football-hl-kv-39f206"  # globally unique Key Vault name
 
-# Required API keys
-export ASSEMBLYAI_API_KEY="<your-assemblyai-key>"
-export API_FOOTBALL_KEY="<your-api-football-key>"
-
 # Optional
-export OPENAI_API_KEY="<your-openai-key>"   # default empty if unset
-export API_KEYS=","                         # "," disables API auth for now
 export DEPLOYMENT_NAME="main"
 export IMAGE_TAG="latest"
 ```
+
+**Secrets:** Populate Key Vault (`assemblyai-api-key`, `api-football-key`, `api-keys`, etc.) yourself (Azure Portal, `az keyvault secret set`, or `scripts/load_env_from_keyvault.sh` for local dev). The deploy script does not write them.
 
 ### Curated matches (no YouTube in the worker)
 
@@ -49,8 +45,6 @@ chmod +x scripts/deploy_azure_env.sh
 The script handles:
 - provider registration
 - resource group + key vault creation (if missing)
-- granting caller `Key Vault Secrets Officer` (if missing)
-- writing secrets to Key Vault
 - Bicep deployment
 - image build/push
 - API + worker restart
