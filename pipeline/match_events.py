@@ -7,6 +7,7 @@ fixture and caches it as ``match_events.json`` in the video workspace folder.
 from __future__ import annotations
 
 import json
+import logging
 import time
 import urllib.request
 from typing import Any
@@ -115,7 +116,8 @@ def _fetch_events(fixture_id: int) -> list[dict[str, Any]]:
         raise MatchEventsError(f"API request failed for fixture {fixture_id}: {exc}") from exc
     elapsed = time.monotonic() - t0
     log.info("API-Football events response received in %.1f s", elapsed)
-    log.debug("API-Football raw response body:\n%s", json.dumps(body, indent=2))
+    if log.isEnabledFor(logging.DEBUG):
+        log.debug("API-Football raw response body:\n%s", json.dumps(body, indent=2))
 
     errors = body.get("errors")
     if errors:
