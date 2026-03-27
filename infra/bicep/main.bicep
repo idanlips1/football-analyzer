@@ -37,6 +37,34 @@ resource highlightsContainer 'Microsoft.Storage/storageAccounts/blobServices/con
   properties: { publicAccess: 'None' }
 }
 
+// Blob lifecycle — delete videos/ after 30 days
+resource blobLifecyclePolicy 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05-01' = {
+  name: '${storageAccount.name}/default'
+  dependsOn: [videosContainer]
+  properties: {
+    policy: {
+      rules: [
+        {
+          name: 'delete-old-videos'
+          enabled: true
+          type: 'Lifecycle'
+          definition: {
+            filters: {
+              blobTypes: ['blockBlob']
+              prefixMatch: ['videos/']
+            }
+            actions: {
+              baseBlob: {
+                delete: { daysAfterModificationGreaterThan: 30 }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+
 // Queue
 resource queueService 'Microsoft.Storage/storageAccounts/queueServices@2023-05-01' = {
   name: '${storageAccount.name}/default'

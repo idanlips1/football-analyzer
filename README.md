@@ -1,101 +1,114 @@
 # Football Highlights Generator
 
-Builds a highlights video from a full football match by combining **[API-Football](https://www.api-football.com/)** event data (goals, cards, VAR, etc.) with **commentary transcription** to align match minutes to video time, then cuts and merges clips with **FFmpeg**.
+Async REST API that generates highlights clips from famous football matches. Submit a natural-language query (e.g. "all goals and cards"), get back a download link when it's ready.
 
-The pipeline is split into two stages:
+Powered by **API-Football** event data + **AssemblyAI** transcription for kickoff detection + **FFmpeg** clip cutting, deployed on **Azure Container Apps**.
 
-- **`ingest.py`** — one-time preprocessing per match (download, transcription, event alignment)
-- **`main.py`** — on-demand query REPL (natural-language highlight requests from ingested games)
+## Architecture
 
-## Prerequisites
-
-| Dependency | Why | Install |
-|------------|-----|---------|
-| **Python 3.12+** | Runtime | [python.org](https://www.python.org/downloads/) |
-| **FFmpeg** | Video download (yt-dlp merge), audio extraction, clip cutting & concatenation | `brew install ffmpeg` (macOS) · `sudo apt install ffmpeg` (Ubuntu) · [ffmpeg.org](https://ffmpeg.org/download.html) |
-
-Verify FFmpeg is available:
-
-```bash
-ffmpeg -version
+```
+POST /jobs → Storage Queue → Worker → pipeline (events → transcription → alignment → clips)
+                                           ↓
+                                    Blob Storage (highlights.mp4)
 ```
 
-## Setup
+Full design: [`docs/2026-03-22-azure-async-deployment-design.md`](docs/2026-03-22-azure-async-deployment-design.md)
+
+## Quickstart (local dev)
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 pre-commit install
 ```
 
-## Environment
-
-Create a `.env` file in the project root (see `.gitignore` — never commit secrets):
+Create `.env`:
 
 | Variable | Purpose |
 |----------|---------|
-| `ASSEMBLYAI_API_KEY` | Transcribe match audio (AssemblyAI) |
-| `API_FOOTBALL_KEY` | Fetch fixtures/events from `v3.football.api-sports.io` (same key as RapidAPI / API-Sports) |
-| `OPENAI_API_KEY` | Interpret natural-language highlight queries (used by `main.py`) |
+| `ASSEMBLYAI_API_KEY` | Transcription (AssemblyAI) |
+| `API_FOOTBALL_KEY` | Match events (`v3.football.api-sports.io`) |
+| `API_KEYS` | Comma-separated API keys for the service (e.g. `dev-key`) |
 
-**API-Football free tier:** daily request limits apply, and **fixture data is often limited to a short rolling window of dates**. For older matches you may need a paid tier.
-
-## Usage
-
-### Step 1 — Ingest a match (once per game)
+Run API and worker in separate terminals:
 
 ```bash
-source .venv/bin/activate
-python ingest.py
+# Terminal 1 — API
+uvicorn api.app:create_app --factory --reload --port 8000
+
+# Terminal 2 — Worker
+python -m worker
 ```
 
-Enter a YouTube URL or a match description (e.g. `Champions League final 2024`). The script:
-
-1. Downloads the full match video
-2. Fetches match events from API-Football
-3. Transcribes commentary (AssemblyAI)
-4. Asks you to confirm detected first/second-half kickoff timestamps (enter manually in `M:SS` or seconds if not detected)
-5. Aligns API events to video time
-6. Writes a ready-to-query game record under `pipeline_workspace/<video_id>/`
-
-Each match only needs to be ingested once. Outputs are cached — re-running skips completed stages.
-
-### Step 2 — Generate highlights (on demand)
+Check it's up:
 
 ```bash
-python main.py
+curl http://localhost:8000/api/v1/health
 ```
 
-Pick an ingested game from the numbered list, then type natural-language requests:
+## API Reference
 
+All routes are prefixed `/api/v1/`. Authentication via `X-API-Key` header.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Health check |
+| `GET` | `/matches` | List curated catalog |
+| `POST` | `/jobs` | Submit a highlights job → `202` with `job_id` |
+| `GET` | `/jobs/{job_id}` | Poll job status and result |
+| `GET` | `/jobs?limit=20` | List recent jobs |
+
+### Submit a job
+
+```bash
+curl -X POST http://localhost:8000/api/v1/jobs \
+  -H "X-API-Key: dev-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "match_id": "istanbul-2005",
+    "highlights_query": "all goals and penalties",
+    "webhook_url": "https://example.com/webhook"   # optional
+  }'
 ```
-> show me a full summary
-> just goals and penalties
-> Salah moments
-> highlights from the second half
+
+Response `202`:
+```json
+{ "job_id": "abc123", "status": "queued", "poll_url": "/api/v1/jobs/abc123" }
 ```
 
-The app interprets your query with an LLM, filters events, cuts clips, and saves a highlights video to `pipeline_workspace/<video_id>/highlights_<slug>.mp4`.
+### Poll for result
 
-Type `back` to pick a different game, `quit` to exit.
-
-## Workspace
-
-Downloaded videos, JSON caches, and highlights videos are stored under `pipeline_workspace/` (ignored by git except `.gitkeep`).
-
+```bash
+curl http://localhost:8000/api/v1/jobs/abc123 -H "X-API-Key: dev-key"
 ```
-pipeline_workspace/
-  <video_id>/
-    metadata.json
-    match_events.json
-    transcription.json
-    aligned_events.json
-    game.json
-    highlights_summary.mp4
-    highlights_salah_moments.mp4
-    …
+
+Response when complete:
+```json
+{
+  "job_id": "abc123",
+  "status": "completed",
+  "result": {
+    "download_url": "https://…blob.core.windows.net/highlights/…?sv=…",
+    "duration_seconds": 142.5,
+    "clip_count": 7,
+    "expires_at": "2026-03-28T12:00:00Z"
+  }
+}
 ```
+
+## Curated Catalog
+
+Videos are pre-uploaded to Azure Blob Storage — no YouTube downloads at request time. To add a new match:
+
+```bash
+python scripts/upload_catalog_match.py
+```
+
+Then add its entry to `catalog/data/matches.json`.
+
+## Deployment
+
+See [DEPLOY.md](DEPLOY.md) for full Azure deployment instructions (Bicep, ACR, Key Vault).
 
 ## Testing
 
@@ -103,20 +116,12 @@ pipeline_workspace/
 pytest
 ```
 
-## Code style
+## Code Style
 
-Type annotations on all functions. See [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## Static analysis
-
-Runs on commit via pre-commit (ruff, mypy, bandit). Manual run:
+Type annotations required on all functions. Linting runs on commit via pre-commit (ruff, mypy, bandit).
 
 ```bash
 ruff check .
 mypy .
 bandit -r . -c pyproject.toml
 ```
-
-## Legacy pipeline
-
-Modules such as `pipeline/excitement.py`, `pipeline/edr.py`, and `pipeline/filtering.py` implement an older audio/LLM-based path and are not used by the default pipeline.
