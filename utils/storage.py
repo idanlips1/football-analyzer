@@ -160,8 +160,12 @@ class BlobStorage:
             # Clean up partial downloads
             if local.exists():
                 local.unlink()
-            # Fail fast: callers expect a real file path for FFmpeg.
-            # Returning a non-existent temp path causes confusing downstream FFmpeg errors.
+            # ResourceNotFoundError means blob doesn't exist yet — caller will create it.
+            # Other errors (auth, network) should still fail fast.
+            from azure.core.exceptions import ResourceNotFoundError  # type: ignore[import-untyped]
+
+            if isinstance(exc, ResourceNotFoundError):
+                return local
             raise StorageError(f"Failed to download {filename!r} for {video_id!r}: {exc}") from exc
         if not local.exists() or local.stat().st_size == 0:
             raise StorageError(
@@ -236,8 +240,7 @@ class BlobStorage:
             expiry=datetime.now(UTC) + timedelta(hours=4),
         )
         return (
-            f"https://{account_name}.blob.core.windows.net/"
-            f"{container_name}/{blob_name}?{sas_token}"
+            f"https://{account_name}.blob.core.windows.net/{container_name}/{blob_name}?{sas_token}"
         )
 
     def generate_sas_url(self, blob_name: str, expiry_hours: int = 24) -> str:

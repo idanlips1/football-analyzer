@@ -27,6 +27,11 @@ log = get_logger(__name__)
 METADATA_FILENAME = "metadata.json"
 # UEFA Champions League (API-Football league id)
 _LEAGUE_CHAMPIONS_LEAGUE = 2
+_LEAGUE_EUROPA_LEAGUE = 3
+_LEAGUE_FA_CUP = 45
+_LEAGUE_PREMIER_LEAGUE = 39
+_LEAGUE_LA_LIGA = 140
+_LEAGUE_WORLD_CUP = 1
 
 
 class MatchFinderError(Exception):
@@ -90,17 +95,18 @@ class TitleParseResult:
 _PIPE_RE = re.compile(r"\s*[|｜]\s*")
 
 
-def parse_video_title(title: str) -> TitleParseResult | None:
-    """Extract teams and optional score from a typical full-match upload title."""
-    t = title.strip()
-    segments = _PIPE_RE.split(t)
-
-    if segments and re.match(r"^(?:FULL\s+MATCH|HIGHLIGHTS?)$", segments[0], re.IGNORECASE):
-        segments = segments[1:]
-
-    t = segments[0].strip() if segments else ""
+def _parse_single_segment(t: str) -> TitleParseResult | None:
+    """Try to extract teams (and optional score) from a single title segment."""
     if not t:
         return None
+
+    # Strip a leading competition/context prefix like "2018 FIFA World Cup: "
+    colon_m = re.match(r"^[^:]+:\s*(.+)$", t)
+    if colon_m:
+        after_colon = colon_m.group(1).strip()
+        # Only use the part after the colon if it still contains a vs/score separator.
+        if re.search(r"\b(?:vs\.?|v\.?)\b|\d+\s*-\s*\d+", after_colon, re.IGNORECASE):
+            t = after_colon
 
     paren_score: tuple[int, int] | None = None
     paren_m = re.search(r"\((\d+)\s*-\s*(\d+)\)", t)
@@ -129,6 +135,37 @@ def parse_video_title(title: str) -> TitleParseResult | None:
     return None
 
 
+def parse_video_title(title: str) -> TitleParseResult | None:
+    """Extract teams and optional score from a typical full-match upload title.
+
+    Tries each pipe-delimited segment so that titles like
+    ``"MBAPPE VS. MESSI | 2018 FIFA World Cup: France v Argentina"``
+    yield *France* / *Argentina* (from the second segment) rather than
+    player names from the first.
+    """
+    t = title.strip()
+    segments = _PIPE_RE.split(t)
+
+    if segments and re.match(r"^(?:FULL\s+MATCH|HIGHLIGHTS?)$", segments[0], re.IGNORECASE):
+        segments = segments[1:]
+
+    # Collect a parse result from every segment, then pick the best one.
+    results: list[TitleParseResult] = []
+    for seg in segments:
+        r = _parse_single_segment(seg.strip())
+        if r is not None:
+            results.append(r)
+
+    if not results:
+        return None
+    if len(results) == 1:
+        return results[0]
+
+    # Prefer the result whose team names are longer (more likely real team names
+    # rather than player names like "Mbappe" / "Messi").
+    return max(results, key=lambda r: len(r.team_a) + len(r.team_b))
+
+
 def parse_teams_from_video_title(title: str) -> tuple[str, str] | None:
     """Extract two club names from a typical full-match upload title."""
     result = parse_video_title(title)
@@ -138,8 +175,19 @@ def parse_teams_from_video_title(title: str) -> tuple[str, str] | None:
 
 
 def extract_years_from_text(text: str) -> list[int]:
-    """Collect plausible calendar years (20xx) from *text*."""
-    return [int(y) for y in re.findall(r"\b(20\d{2})\b", text)]
+    """Collect plausible calendar years (20xx) from *text*.
+
+    Also handles shorthand seasons like "2023-24" → [2023, 2024].
+    """
+    years: list[int] = []
+    # Match "2023-24" style season shorthand first.
+    for full, _, short in re.findall(r"\b(20(\d{2}))-(\d{2})\b", text):
+        years.append(int(full))
+        years.append(2000 + int(short))
+    # Then standalone 4-digit years, excluding those already captured in a season range.
+    cleaned = re.sub(r"\b20\d{2}-\d{2}\b", "", text)
+    years.extend(int(y) for y in re.findall(r"\b(20\d{2})\b", cleaned))
+    return years
 
 
 def infer_league_id_from_query(query: str) -> int | None:
@@ -147,6 +195,16 @@ def infer_league_id_from_query(query: str) -> int | None:
     q = query.lower()
     if "champions league" in q or re.search(r"\bucl\b", q):
         return _LEAGUE_CHAMPIONS_LEAGUE
+    if "europa league" in q or re.search(r"\buel\b", q):
+        return _LEAGUE_EUROPA_LEAGUE
+    if "fa cup" in q or "emirates fa" in q:
+        return _LEAGUE_FA_CUP
+    if "premier league" in q or re.search(r"\bepl\b", q):
+        return _LEAGUE_PREMIER_LEAGUE
+    if "la liga" in q or "laliga" in q:
+        return _LEAGUE_LA_LIGA
+    if "world cup" in q or re.search(r"\bfifa\b", q):
+        return _LEAGUE_WORLD_CUP
     return None
 
 
