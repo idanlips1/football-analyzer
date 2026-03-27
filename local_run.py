@@ -14,9 +14,6 @@ Usage examples:
     # Dry-run — everything except FFmpeg cutting (fast feedback on alignment/filtering)
     python local_run.py --match-id 5T7T3JbOqkE --query "all goals" --dry-run
 
-    # Use cached match_events.json instead of calling API-Football
-    python local_run.py --match-id 5T7T3JbOqkE --query "show me corners" --use-cached-events
-
     # Skip OpenAI interpreter — manually specify query type
     python local_run.py --match-id 5T7T3JbOqkE --query "goals" --query-type full_summary
 """
@@ -78,7 +75,6 @@ def _run_pipeline_local(
     storage: LocalStorage,
     *,
     dry_run: bool = False,
-    use_cached_events: bool = False,
     manual_query_type: str | None = None,
 ) -> dict[str, Any]:
     """Run the pipeline stages with timing and optional shortcuts."""
@@ -90,14 +86,11 @@ def _run_pipeline_local(
         enforce_budget,
         merge_clips,
     )
-    from pipeline.event_aligner import align_events
     from pipeline.event_filter import filter_events
-    from pipeline.match_events import fetch_filtered_events
 
     game = GameState.from_dict(storage.read_json(match_id, "game.json"))
     metadata = storage.read_json(match_id, "metadata.json")
 
-    # Backfill metadata fields from game.json (ingestion may not have written them)
     if not metadata.get("fixture_id") and game.fixture_id:
         metadata["fixture_id"] = game.fixture_id
     metadata.setdefault("home_team", game.home_team)
@@ -105,66 +98,52 @@ def _run_pipeline_local(
 
     total_t0 = time.monotonic()
 
-    # ── Stage 1: Interpret query ─────────────────────────────────────────
     print(f"\n{'=' * 60}")
     print(f"  Match: {game.home_team} vs {game.away_team} ({game.date})")
     print(f"  Query: {query!r}")
     print(f"{'=' * 60}\n")
 
     t0 = time.monotonic()
-    if manual_query_type:
-        qt = QueryType(manual_query_type)
-        player_name = query if qt == QueryType.PLAYER else None
-        hq = HighlightQuery(query_type=qt, player_name=player_name, raw_query=query)
-        print(f"  [1/5] Query interpretation SKIPPED (manual: {qt.value})")
-    else:
-        from pipeline.query_interpreter import interpret_query
-
-        print("  [1/5] Interpreting query (OpenAI)...")
-        hq = interpret_query(query, game, [])
-    elapsed = time.monotonic() - t0
-    print(f"         → type={hq.query_type.value}  events={hq.event_types}")
-    print(f"           api_event_type={hq.api_event_type}  player={hq.player_name}")
-    minute_range = f"{hq.minute_from}'-{hq.minute_to}'" if hq.minute_from or hq.minute_to else "all"
-    print(f"           minutes={minute_range}")
-    print(f"           ({elapsed:.1f}s)\n")
-
-    # ── Stage 2: Fetch events ────────────────────────────────────────────
-    t0 = time.monotonic()
-    if use_cached_events:
-        print("  [2/5] Loading cached match_events.json (skipping API-Football)...")
-        events_data = storage.read_json(match_id, "match_events.json")
-    else:
-        print("  [2/5] Fetching filtered events (API-Football)...")
-        events_data = fetch_filtered_events(metadata, hq)
-    elapsed = time.monotonic() - t0
-    n_events = events_data.get("event_count", len(events_data.get("events", [])))
-    print(f"         → {n_events} events fetched ({elapsed:.1f}s)\n")
-
-    # ── Stage 3: Align events ────────────────────────────────────────────
-    t0 = time.monotonic()
-    print("  [3/5] Aligning events to video timestamps...")
-    aligned_data = align_events(
-        events_data,
-        metadata,
-        storage,
-        game.kickoff_first_half,
-        game.kickoff_second_half,
-        force_recompute=True,
-        save_to_disk=True,
-    )
+    print("  [1/4] Loading pre-aligned events…")
+    try:
+        aligned_data = storage.read_json(match_id, "aligned_events.json")
+    except Exception:
+        print(
+            f"\n  Error: No aligned_events.json for '{match_id}'.\n"
+            "  Run `python ingest.py` first.\n",
+            file=sys.stderr,
+        )
+        raise
     aligned_events = [AlignedEvent.from_dict(e) for e in aligned_data.get("events", [])]
     elapsed = time.monotonic() - t0
     print(f"         → {len(aligned_events)} aligned events ({elapsed:.1f}s)\n")
 
-    # ── Stage 4: Filter events ───────────────────────────────────────────
+    player_names = sorted({name for e in aligned_events for name in [e.player, e.assist] if name})
+
     t0 = time.monotonic()
-    print("  [4/5] Filtering events by query...")
+    if manual_query_type:
+        qt = QueryType(manual_query_type)
+        player_name = query if qt == QueryType.PLAYER else None
+        hq = HighlightQuery(query_type=qt, player_name=player_name, raw_query=query)
+        print(f"  [2/4] Query interpretation SKIPPED (manual: {qt.value})")
+    else:
+        from pipeline.query_interpreter import interpret_query
+
+        print("  [2/4] Interpreting query (OpenAI)...")
+        hq = interpret_query(query, game, player_names)
+    elapsed = time.monotonic() - t0
+    print(f"         → type={hq.query_type.value}  events={hq.event_types}")
+    print(f"           player={hq.player_name}")
+    minute_range = f"{hq.minute_from}'-{hq.minute_to}'" if hq.minute_from or hq.minute_to else "all"
+    print(f"           minutes={minute_range}")
+    print(f"           ({elapsed:.1f}s)\n")
+
+    t0 = time.monotonic()
+    print("  [3/4] Filtering events by query...")
     filtered = filter_events(aligned_events, hq)
     elapsed = time.monotonic() - t0
     print(f"         → {len(filtered)} events after filtering ({elapsed:.1f}s)\n")
 
-    # Print event table
     print("  ┌─────┬────────────────┬──────────────────────┬──────────────────────┬─────────┐")
     print("  │ Min │ Type           │ Player               │ Assist               │ Video   │")
     print("  ├─────┼────────────────┼──────────────────────┼──────────────────────┼─────────┤")
@@ -179,14 +158,13 @@ def _run_pipeline_local(
         )
     print("  └─────┴────────────────┴──────────────────────┴──────────────────────┴─────────┘\n")
 
-    # ── Stage 5: Build clips ─────────────────────────────────────────────
     t0 = time.monotonic()
     clips = calculate_clip_windows([dataclasses.asdict(e) for e in filtered], game.duration_seconds)
     clips = merge_clips(clips)
     clips = enforce_budget(clips)
     total_dur = sum(c["clip_end"] - c["clip_start"] for c in clips)
 
-    print(f"  [5/5] Clip plan: {len(clips)} clips, ~{total_dur:.0f}s total")
+    print(f"  [4/4] Clip plan: {len(clips)} clips, ~{total_dur:.0f}s total")
     for i, c in enumerate(clips):
         dur = c["clip_end"] - c["clip_start"]
         events_str = " + ".join(c["events"])
@@ -207,7 +185,6 @@ def _run_pipeline_local(
             "clips": clips,
         }
 
-    # Actual FFmpeg cutting
     print("\n         Cutting and concatenating with FFmpeg...")
     from pipeline.clip_builder import build_highlights
 
@@ -242,12 +219,6 @@ def main() -> None:
         help="Plan clips but skip FFmpeg (fast feedback on alignment/filtering logic)",
     )
     parser.add_argument(
-        "--use-cached-events",
-        "-c",
-        action="store_true",
-        help="Load match_events.json from disk instead of calling API-Football",
-    )
-    parser.add_argument(
         "--query-type",
         "-t",
         choices=["full_summary", "event_filter", "player"],
@@ -272,7 +243,6 @@ def main() -> None:
         if not match_id:
             sys.exit(0)
 
-    # Verify the match exists
     try:
         storage.read_json(match_id, "game.json")
     except Exception:
@@ -297,7 +267,6 @@ def main() -> None:
             query,
             storage,
             dry_run=args.dry_run,
-            use_cached_events=args.use_cached_events,
             manual_query_type=args.query_type,
         )
     except KeyboardInterrupt:

@@ -61,67 +61,58 @@ def run_catalog_pipeline(
     highlights_query: str,
     storage: StorageBackend,
     progress_callback: Any = None,
-    kickoff_first_override: float | None = None,
-    kickoff_second_override: float | None = None,
 ) -> dict[str, Any]:
-    """Execute query-time pipeline: NLP interpretation → dynamic events → alignment → clips."""
-
-    if progress_callback:
-        progress_callback("interpreting_query")
+    """Execute query-time pipeline: load pre-aligned events → LLM → filter → clips."""
 
     from models.events import AlignedEvent
     from models.game import GameState
     from models.highlight_query import HighlightQuery, QueryType
     from pipeline.clip_builder import build_highlights
-    from pipeline.event_aligner import align_events
     from pipeline.event_filter import filter_events
-    from pipeline.match_events import fetch_filtered_events
     from pipeline.query_interpreter import interpret_query
 
-    # Load game data prepared during Ingestion Stage
     try:
         game = GameState.from_dict(storage.read_json(match_id, "game.json"))
-        metadata = storage.read_json(match_id, "metadata.json")
     except Exception as exc:
         raise CatalogPipelineError(
-            f"Missing ingestion data for {match_id}. Run ingestion first."
+            f"Missing ingestion data for {match_id}. Run ingest.py first."
         ) from exc
 
-    # 1. Interpret NLP Query
+    if progress_callback:
+        progress_callback("loading_events")
+
     try:
-        hq = interpret_query(highlights_query, game, [])
+        aligned_data = storage.read_json(match_id, "aligned_events.json")
+    except Exception as exc:
+        raise CatalogPipelineError(
+            f"Missing aligned events for {match_id}. Run ingest.py first."
+        ) from exc
+
+    aligned_events = [AlignedEvent.from_dict(e) for e in aligned_data.get("events", [])]
+    if not aligned_events:
+        raise CatalogPipelineError(
+            f"aligned_events.json for {match_id} is empty or stale. Re-run ingest.py."
+        )
+
+    player_names = sorted({name for e in aligned_events for name in [e.player, e.assist] if name})
+
+    if progress_callback:
+        progress_callback("interpreting_query")
+
+    try:
+        hq = interpret_query(highlights_query, game, player_names)
     except Exception as exc:
         log.warning("Interpreter failed: %s", exc)
         hq = HighlightQuery(query_type=QueryType.FULL_SUMMARY, raw_query=highlights_query)
 
     if progress_callback:
-        progress_callback("fetching_dynamic_events")
+        progress_callback("filtering")
 
-    # 2. Fetch specific events dynamically
-    events_data = fetch_filtered_events(metadata, hq)
-
-    if progress_callback:
-        progress_callback("aligning")
-
-    # 3. Align these dynamically fetched events against the transcription
-    aligned_data = align_events(
-        events_data,
-        metadata,
-        storage,
-        game.kickoff_first_half,
-        game.kickoff_second_half,
-        force_recompute=True,
-        save_to_disk=False,
-    )
-    aligned_events = [AlignedEvent.from_dict(e) for e in aligned_data.get("events", [])]
+    filtered = filter_events(aligned_events, hq)
 
     if progress_callback:
         progress_callback("building_clips")
 
-    # 4. Local fallback filtering
-    filtered = filter_events(aligned_events, hq)
-
-    # 5. Build final clips
     result = build_highlights(
         filtered,
         game,

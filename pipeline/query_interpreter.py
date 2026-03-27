@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import json
 from typing import cast
-from urllib.parse import urlparse
 
 from openai import OpenAI
 
 from config.settings import OPENAI_API_KEY, OPENAI_LABEL_MODEL, OPENAI_MODEL
-from models.events import AlignedEvent, EventType
+from models.events import EventType
 from models.game import GameState
 from models.highlight_query import HighlightQuery, QueryType
 from utils.logger import get_logger
@@ -56,57 +55,6 @@ Time / half filtering (applies to ANY query_type above):
 Return ONLY valid JSON, nothing else.\
 """
 
-# Maps our EventType string values to API-Football's event type parameter.
-# Used to derive api_event_type in code rather than asking the LLM to know API internals.
-_EVENTTYPE_TO_API_TYPE: dict[str, str] = {
-    "goal": "Goal",
-    "own_goal": "Goal",
-    "penalty": "Goal",
-    "yellow_card": "Card",
-    "red_card": "Card",
-    "card": "Card",
-    "substitution": "subst",
-    "var_review": "Var",
-}
-
-
-def _get_players_map(fixture_id: int) -> dict[str, int]:
-    import urllib.request
-
-    from config.settings import API_FOOTBALL_BASE_URL, API_FOOTBALL_KEY
-
-    if not API_FOOTBALL_KEY:
-        return {}
-    url = f"{API_FOOTBALL_BASE_URL}/fixtures/lineups?fixture={fixture_id}"
-    req = urllib.request.Request(
-        url,
-        headers={
-            "x-rapidapi-key": API_FOOTBALL_KEY,
-            "x-rapidapi-host": "v3.football.api-sports.io",
-        },
-    )
-    parsed = urlparse(url)
-    if parsed.scheme != "https" or parsed.netloc != "v3.football.api-sports.io":
-        log.warning("Refusing lineup fetch from unexpected host: %s", url)
-        return {}
-    players_map = {}
-    try:
-        with urllib.request.urlopen(req) as resp:  # nosec B310
-            body = json.loads(resp.read().decode())
-            for team in body.get("response", []):
-                for start in team.get("startXI", []):
-                    p = start.get("player", {})
-                    if p.get("name") and p.get("id"):
-                        players_map[p["name"]] = p["id"]
-                for sub in team.get("substitutes", []):
-                    p = sub.get("player", {})
-                    if p.get("name") and p.get("id"):
-                        players_map[p["name"]] = p["id"]
-    except Exception as exc:
-        log.warning("Failed to fetch fixture lineups for players map: %s", exc)
-    return players_map
-
-
 _LABEL_SYSTEM_PROMPT = (
     "Return ONLY a short snake_case label (1–3 words, no articles) for a football "
     "highlights video described by the user query. Examples: 'neto_highlights', "
@@ -140,30 +88,15 @@ def _generate_highlights_label(raw_query: str, client: OpenAI) -> str:
 def interpret_query(
     raw_query: str,
     game: GameState,
-    aligned_events: list[AlignedEvent],
+    player_names: list[str],
 ) -> HighlightQuery:
-    """Interpret *raw_query* using OpenAI and return a structured HighlightQuery.
-
-    Falls back to FULL_SUMMARY on any LLM or parsing failure.
-    Raises QueryInterpreterError only if OPENAI_API_KEY is missing.
-    """
+    """Interpret *raw_query* using OpenAI and return a structured HighlightQuery."""
     if not OPENAI_API_KEY:
         raise QueryInterpreterError("OPENAI_API_KEY is not set — add it to your .env file")
 
-    players_map = _get_players_map(game.fixture_id)
-
-    # Collect player names from lineup API and from the already-aligned events
-    player_names_set: set[str] = set(players_map.keys())
-    for event in aligned_events:
-        if event.player:
-            player_names_set.add(event.player)
-        if event.assist:
-            player_names_set.add(event.assist)
-    player_names = sorted(player_names_set)
-
     user_message = (
         f"Game: {game.home_team} vs {game.away_team} ({game.date})\n"
-        f"Available players: {json.dumps(player_names)}\n\n"
+        f"Available players: {json.dumps(sorted(player_names))}\n\n"
         f"User query: {raw_query}"
     )
 
@@ -187,14 +120,6 @@ def interpret_query(
             event_types = [EventType(et) for et in cast(list[str], raw_event_types)]
 
         player_name: str | None = data.get("player_name")  # type: ignore[assignment]
-
-        # Derive API-level optimisation fields from the structured output — the LLM
-        # doesn't need to know API-Football internals or numerical IDs.
-        api_player_id: int | None = players_map.get(str(player_name)) if player_name else None
-        api_event_type: str | None = None
-        if event_types and len(event_types) == 1:
-            api_event_type = _EVENTTYPE_TO_API_TYPE.get(event_types[0].value)
-
         minute_from: int | None = data.get("minute_from")  # type: ignore[assignment]
         minute_to: int | None = data.get("minute_to")  # type: ignore[assignment]
 
@@ -204,8 +129,6 @@ def interpret_query(
             query_type=query_type,
             event_types=event_types,
             player_name=player_name,
-            api_player_id=api_player_id,
-            api_event_type=api_event_type,
             raw_query=raw_query,
             minute_from=minute_from,
             minute_to=minute_to,

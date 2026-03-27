@@ -14,7 +14,7 @@ class GameState:
     away_team: str
     league: str
     date: str  # "YYYY-MM-DD"
-    fixture_id: int
+    fixture_id: int | None
     video_filename: str  # filename only, e.g. "match.mp4"
     source: str  # canonical "https://www.youtube.com/watch?v=<id>"
     duration_seconds: float

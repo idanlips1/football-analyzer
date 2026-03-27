@@ -161,7 +161,56 @@ class TestAlignedEvent:
         assert AlignedEvent.from_dict(event.to_dict()) == event
 
 
+class TestCatalogMatch:
+    def test_events_snapshot_can_be_none(self) -> None:
+        from catalog.loader import CatalogMatch
+
+        m = CatalogMatch(
+            match_id="test",
+            title="Test",
+            home_team="A",
+            away_team="B",
+            competition="Test",
+            season_label="2024",
+            events_snapshot=None,
+            fixture_id=12345,
+        )
+        assert m.events_snapshot is None
+
+
 class TestGameState:
+    def test_fixture_id_can_be_none(self) -> None:
+        g = GameState(
+            video_id="test",
+            home_team="A",
+            away_team="B",
+            league="PL",
+            date="2024-01-01",
+            fixture_id=None,
+            video_filename="match.mp4",
+            source="catalog:test",
+            duration_seconds=5400.0,
+            kickoff_first_half=300.0,
+            kickoff_second_half=3300.0,
+        )
+        assert g.fixture_id is None
+
+    def test_roundtrip_with_none_fixture_id(self) -> None:
+        g = GameState(
+            video_id="test",
+            home_team="A",
+            away_team="B",
+            league="PL",
+            date="2024-01-01",
+            fixture_id=None,
+            video_filename="match.mp4",
+            source="catalog:test",
+            duration_seconds=5400.0,
+            kickoff_first_half=300.0,
+            kickoff_second_half=3300.0,
+        )
+        assert GameState.from_dict(g.to_dict()).fixture_id is None
+
     def test_roundtrip_serialisation(self) -> None:
         gs = GameState(
             video_id="abc123",

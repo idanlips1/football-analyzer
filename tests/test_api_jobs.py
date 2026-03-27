@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
+from catalog.loader import load_catalog
 from models.job import Job, JobResult, JobStatus
 from utils.job_queue import InMemoryQueue
 from utils.job_store import InMemoryJobStore
@@ -26,11 +27,23 @@ def queue() -> InMemoryQueue:
 
 
 @pytest.fixture()
-def client(store: InMemoryJobStore, queue: InMemoryQueue) -> Iterator[TestClient]:
+def mock_storage() -> MagicMock:
+    storage = MagicMock()
+    storage.list_games.return_value = [m.match_id for m in load_catalog()]
+    return storage
+
+
+@pytest.fixture()
+def client(
+    store: InMemoryJobStore,
+    queue: InMemoryQueue,
+    mock_storage: MagicMock,
+) -> Iterator[TestClient]:
     with (
         patch("api.app.API_KEYS", ["test-key"]),
         patch("api.dependencies._store", store),
         patch("api.dependencies._queue", queue),
+        patch("api.dependencies._storage", mock_storage),
     ):
         from api.app import create_app
 
@@ -129,11 +142,12 @@ def test_list_jobs_with_results(client: TestClient) -> None:
     assert len(response.json()["jobs"]) == 2
 
 
-def test_create_job_with_kickoff_overrides_bypasses_cache(
+def test_create_job_returns_cached_completed_job(
     client: TestClient,
     store: InMemoryJobStore,
 ) -> None:
     cached = Job(
+        job_id="cachedjobid01",
         match_id=_VALID_MATCH,
         highlights_query="goals",
         query="label",
@@ -152,10 +166,8 @@ def test_create_job_with_kickoff_overrides_bypasses_cache(
         json={
             "match_id": _VALID_MATCH,
             "highlights_query": "goals",
-            "kickoff_first_half": 120.0,
-            "kickoff_second_half": 3900.0,
         },
         headers=HEADERS,
     )
-    assert response.status_code == 202
-    assert response.json()["job_id"] != cached.job_id
+    assert response.status_code == 200
+    assert response.json()["job_id"] == "cachedjobid01"

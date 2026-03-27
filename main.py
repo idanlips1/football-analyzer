@@ -9,6 +9,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from typing import Any, cast
 
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000").rstrip("/")
 
@@ -32,25 +33,25 @@ def _display_game_list(matches: list[dict]) -> None:
     print()
 
 
-def _get_matches() -> list[dict]:
+def _get_matches() -> list[dict[str, Any]]:
     url = f"{API_BASE_URL}/api/v1/matches"
     try:
-        with urllib.request.urlopen(url) as response:
+        with urllib.request.urlopen(url) as response:  # nosec B310
             data = json.loads(response.read().decode())
-            return data.get("matches", [])
+            return cast(list[dict[str, Any]], data.get("matches", []))
     except Exception as e:
         print(f"Error fetching matches from API: {e}", file=sys.stderr)
         return []
 
 
-def _submit_job(match_id: str, query: str) -> dict | None:
+def _submit_job(match_id: str, query: str) -> dict[str, Any] | None:
     url = f"{API_BASE_URL}/api/v1/jobs"
     payload = {"match_id": match_id, "highlights_query": query}
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req) as response:
-            return json.loads(response.read().decode())
+        with urllib.request.urlopen(req) as response:  # nosec B310
+            return cast(dict[str, Any], json.loads(response.read().decode()))
     except urllib.error.HTTPError as e:
         body = e.read().decode()
         print(f"  Error submitting job: {e.code} - {body}", file=sys.stderr)
@@ -64,7 +65,7 @@ def _poll_job(poll_url: str) -> None:
     print("\n  Job queued. Waiting for worker to process on Azure...")
     while True:
         try:
-            with urllib.request.urlopen(url) as response:
+            with urllib.request.urlopen(url) as response:  # nosec B310
                 job_data = json.loads(response.read().decode())
                 status = job_data.get("status")
 

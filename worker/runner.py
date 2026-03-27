@@ -27,8 +27,6 @@ def _run_pipeline(
     highlights_query: str,
     storage: StorageBackend,
     progress_callback: Any = None,
-    kickoff_first_override: float | None = None,
-    kickoff_second_override: float | None = None,
 ) -> dict[str, Any]:
     """Run the full highlights pipeline for a catalog match."""
     from pipeline.catalog_pipeline import run_catalog_pipeline
@@ -38,8 +36,6 @@ def _run_pipeline(
         highlights_query,
         storage,
         progress_callback=progress_callback,
-        kickoff_first_override=kickoff_first_override,
-        kickoff_second_override=kickoff_second_override,
     )
 
 
@@ -50,8 +46,6 @@ def process_job(
     webhook_url: str | None,
     store: JobStore,
     storage: StorageBackend,
-    kickoff_first_override: float | None = None,
-    kickoff_second_override: float | None = None,
 ) -> None:
     """Process a single job — runs pipeline, updates state, fires webhook."""
     store.update(job_id, status=JobStatus.PROCESSING, progress="starting")
@@ -66,8 +60,6 @@ def process_job(
             highlights_query,
             storage,
             progress_callback=on_progress,
-            kickoff_first_override=kickoff_first_override,
-            kickoff_second_override=kickoff_second_override,
         )
 
         video_id_for_cleanup = str(result.get("video_id") or "")
@@ -173,8 +165,6 @@ def run_worker(queue: JobQueue, store: JobStore, storage: StorageBackend) -> Non
             webhook_url=msg.body.get("webhook_url"),
             store=store,
             storage=storage,
-            kickoff_first_override=msg.body.get("kickoff_first_half"),
-            kickoff_second_override=msg.body.get("kickoff_second_half"),
         )
 
         queue.delete(msg)

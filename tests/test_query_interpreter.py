@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from models.events import AlignedEvent, EventType
+from models.events import EventType
 from models.game import GameState
 from models.highlight_query import QueryType
 from pipeline.query_interpreter import QueryInterpreterError, interpret_query
@@ -26,24 +26,6 @@ def _make_game() -> GameState:
         duration_seconds=5400.0,
         kickoff_first_half=330.0,
         kickoff_second_half=3420.0,
-    )
-
-
-def _make_aligned_event(
-    player: str = "Mohamed Salah", event_type: EventType = EventType.GOAL
-) -> AlignedEvent:
-    return AlignedEvent(
-        event_type=event_type,
-        minute=21,
-        extra_minute=None,
-        half="1st Half",
-        player=player,
-        team="Liverpool",
-        score="1 - 0",
-        detail="Normal Goal",
-        estimated_video_ts=1590.0,
-        refined_video_ts=1590.0,
-        confidence=0.9,
     )
 
 
@@ -71,7 +53,7 @@ class TestInterpretQuery:
             mock_cls.return_value.chat.completions.create.return_value = _mock_openai_response(
                 payload
             )
-            result = interpret_query("show me everything", _make_game(), [_make_aligned_event()])
+            result = interpret_query("show me everything", _make_game(), ["Mohamed Salah"])
         assert result.query_type == QueryType.FULL_SUMMARY
 
     def test_event_filter_response(self) -> None:
@@ -82,11 +64,10 @@ class TestInterpretQuery:
             mock_cls.return_value.chat.completions.create.return_value = _mock_openai_response(
                 payload
             )
-            result = interpret_query(
-                "just goals and penalties", _make_game(), [_make_aligned_event()]
-            )
+            result = interpret_query("just goals and penalties", _make_game(), ["Mohamed Salah"])
         assert result.query_type == QueryType.EVENT_FILTER
-        assert EventType.GOAL in (result.event_types or [])
+        assert result.event_types is not None
+        assert EventType.GOAL in result.event_types
 
     def test_player_response(self) -> None:
         payload = json.dumps(
@@ -96,7 +77,7 @@ class TestInterpretQuery:
             mock_cls.return_value.chat.completions.create.return_value = _mock_openai_response(
                 payload
             )
-            result = interpret_query("Salah moments", _make_game(), [_make_aligned_event()])
+            result = interpret_query("Salah moments", _make_game(), ["Mohamed Salah"])
         assert result.query_type == QueryType.PLAYER
         assert result.player_name == "Mohamed Salah"
 
