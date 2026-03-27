@@ -4,17 +4,16 @@ Builds a highlights video from a full football match by combining **[API-Footbal
 
 The pipeline is split into two stages:
 
-- **`ingest.py`** (or **`scripts/ingest_youtube_query.py`** for Azure-oriented upload) — one-time preprocessing per match (download, transcription, event alignment)
-- **`main.py`** — thin client to the API: list matches, submit highlight jobs, poll for results
+- **`scripts/ingest_youtube_query.py`** — primary operator tool: **search YouTube** (ytsearch), confirm the video, update **`catalog/data/matches.json`**, download, run the full ingest pipeline, and **upload to Azure Blob Storage** by default (use **`--local`** only for dev without Azure). This is what you use to put matches in front of the deployed API.
+- **`ingest.py`** — alternative entrypoint: pick a **catalog** match interactively (YouTube URL or query), same pipeline stages; storage is **`pipeline_workspace/`** or Azure Blob depending on **`STORAGE_BACKEND`** / **`AZURE_STORAGE_CONNECTION_STRING`** in config (see `config/settings.py`).
+- **`main.py`** — thin client to the API: list matches, submit highlight jobs, poll for results.
 
 ```mermaid
 flowchart TD
   subgraph INGEST["Ingest — one-time per match"]
-    A([ingest.py or ingest_youtube_query.py]) --> B([Local mp4 or YouTube URL])
-    B -->|YouTube| C[yt-dlp download]
-    B -->|Local file| D[Copy to storage]
-    C --> D
-    D --> E[FFmpeg — audio extraction]
+    A([ingest_youtube_query.py]) --> B[yt-dlp → match.mp4 → storage]
+    A2([ingest.py]) --> B
+    B --> E[FFmpeg — audio extraction]
     E --> F[AssemblyAI — transcription]
     F --> G[Kickoff detection]
     G --> H([User confirms kickoff timestamps])
@@ -81,7 +80,10 @@ Create a `.env` file in the project root (see `.gitignore` — never commit secr
 |----------|---------|
 | `ASSEMBLYAI_API_KEY` | Transcribe match audio (AssemblyAI) |
 | `API_FOOTBALL_KEY` | Fetch fixtures/events from `v3.football.api-sports.io` (same key as RapidAPI / API-Sports) |
-| `OPENAI_API_KEY` | Interpret natural-language highlight queries (used by `main.py`) |
+| `OPENAI_API_KEY` | Interpret natural-language highlight queries (API worker / query pipeline) |
+| `AZURE_STORAGE_CONNECTION_STRING` | **Ingest to Azure Blob** from `scripts/ingest_youtube_query.py` (omit only if you pass `--local` for dev) |
+
+For local development you can also load secrets from Key Vault — see `scripts/load_env_from_keyvault.sh` and `docs/DEPLOY.md`.
 
 **API-Football free tier:** daily request limits apply, and **fixture data is often limited to a short rolling window of dates**. For older matches you may need a paid tier.
 
@@ -89,21 +91,44 @@ Create a `.env` file in the project root (see `.gitignore` — never commit secr
 
 ### Step 1 — Ingest a match (once per game)
 
+**Recommended — `scripts/ingest_youtube_query.py` (Azure + catalog)**
+
+Runs on your machine (not inside the API container). From the repo root, with a venv activated:
+
+```bash
+source .venv/bin/activate
+python scripts/ingest_youtube_query.py "Manchester United Liverpool FA Cup 2024 full match"
+```
+
+Flow in short:
+
+1. **ytsearch** on YouTube — you confirm the hit (title + duration).
+2. **`match_id`** — you confirm or edit the catalog slug; `catalog/data/matches.json` is updated.
+3. **Fixture** — API-Football resolution when possible (or you fix `fixture_id` later).
+4. **Download** — `yt-dlp` writes `match.mp4` (unless **`--resume`** and the blob already has a video).
+5. **Pipeline** — audio extract → AssemblyAI → kickoff confirmation → API-Football events → alignment.
+6. **Storage** — writes **`videos/<match_id>/`** (`match.mp4`, `metadata.json`) and **`pipeline/<match_id>/`** (`game.json`, `transcription.json`, `match_events.json`, `aligned_events.json`, …) in Azure Blob when `AZURE_STORAGE_CONNECTION_STRING` is set (or fetched via `az` + `AZURE_STORAGE_ACCOUNT` / `AZURE_RESOURCE_GROUP`).
+
+Useful flags:
+
+| Flag | Meaning |
+|------|--------|
+| `--resume` | Skip download if `match.mp4` is already in storage; continue ingest. |
+| `--local` | Allow falling back to **`pipeline_workspace/`** when Azure is unavailable (not for production). |
+| `--no-ingest` | Catalog + download only. |
+
+Without Azure credentials the script **exits** unless you pass **`--local`**.
+
+**Alternative — `ingest.py`**
+
 ```bash
 source .venv/bin/activate
 python ingest.py
 ```
 
-Enter a YouTube URL or a match description (e.g. `Champions League final 2024`). The script:
+Interactive catalog flow: YouTube URL or text query → download → same pipeline stages. Writes to **`pipeline_workspace/<video_id>/`** when using local storage, or to the same **videos** / **pipeline** blob layout when **`STORAGE_BACKEND=azure`** and a connection string is configured.
 
-1. Downloads the full match video
-2. Fetches match events from API-Football
-3. Transcribes commentary (AssemblyAI)
-4. Asks you to confirm detected first/second-half kickoff timestamps (enter manually in `M:SS` or seconds if not detected)
-5. Aligns API events to video time
-6. Writes a ready-to-query game record under `pipeline_workspace/<video_id>/`
-
-Each match only needs to be ingested once. Outputs are cached — re-running skips completed stages.
+Each match only needs to be ingested once. Stages are cached — re-runs skip work that already completed.
 
 ### Step 2 — Generate highlights (on demand)
 
@@ -128,18 +153,18 @@ Type `back` to pick a different game, `quit` to exit.
 
 ## Workspace
 
-Downloaded videos, JSON caches, and highlights videos are stored under `pipeline_workspace/` (ignored by git except `.gitkeep`).
+- **Local storage (`STORAGE_BACKEND` local, or `ingest_youtube_query.py --local`):** `pipeline_workspace/<video_id>/` holds the same artifacts as below (ignored by git except `.gitkeep`).
+- **Deployed / Azure ingest:** Blob Storage containers mirror that layout — **`videos/<match_id>/`** (e.g. `match.mp4`, `metadata.json`), **`pipeline/<match_id>/`** (e.g. `game.json`, `aligned_events.json`, transcription, events JSON), **`highlights/<match_id>/`** for generated highlight files.
 
 ```
-pipeline_workspace/
+pipeline_workspace/   # local only
   <video_id>/
     metadata.json
     match_events.json
     transcription.json
     aligned_events.json
     game.json
-    highlights_summary.mp4
-    highlights_salah_moments.mp4
+    highlights_<slug>.mp4
     …
 ```
 
@@ -165,8 +190,9 @@ bandit -r . -c pyproject.toml
 
 ## Azure
 
-- Deployment: see `docs/DEPLOY.md`
-- Teammate access (RBAC): see `docs/AZURE_RBAC.md`
+- **Deploy the API/worker:** `docs/DEPLOY.md` and `scripts/deploy_azure_env.sh`
+- **Add matches to storage (operator):** `python scripts/ingest_youtube_query.py "…"` with `AZURE_STORAGE_CONNECTION_STRING` (or Azure CLI–discoverable storage account settings as in the script docstring)
+- **Teammate access (RBAC):** `docs/AZURE_RBAC.md`
 
 ## Legacy pipeline
 

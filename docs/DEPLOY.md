@@ -13,7 +13,7 @@ Set deployment-related variables (no API keys — those live in Key Vault; see b
 
 ```bash
 export RG_NAME="football-hl-rg"
-export LOCATION="israelcentral"   # must match your subscription policy
+export LOCATION="germanywestcentral"   # must match your subscription policy
 export BASE_NAME="football-hl"
 export KV_NAME="football-hl-kv-39f206"  # globally unique Key Vault name
 
@@ -28,12 +28,9 @@ export IMAGE_TAG="latest"
 
 Videos are **uploaded ahead of time** to blob storage (`videos/<match_id>/match.mp4` + `metadata.json`).
 
-Operator options:
+Operator path: **`scripts/ingest_youtube_query.py`** — **search YouTube from free text**, confirm by **title + duration**, add/update **`catalog/data/matches.json`**, download, run full ingestion, and upload to Blob (see README).
 
-- `scripts/upload_catalog_match.py`: upload a local `.mp4` (or a specific YouTube URL)
-- `scripts/ingest_youtube_query.py`: end-to-end helper — **search YouTube from free text**, confirm by **title + duration**, add/update the catalog entry, download, and run ingestion
-
-The API only accepts jobs for known catalog ids — list them with `GET /api/v1/matches`.
+`GET /api/v1/matches` lists matches that have **`videos/<match_id>/match.mp4`** and **`metadata.json`**. Jobs require **`pipeline/<match_id>/game.json`** and **`aligned_events.json`** (fully ingested).
 
 ## 2. Run one-shot deployment script
 
@@ -43,6 +40,7 @@ chmod +x scripts/deploy_azure_env.sh
 ```
 
 The script handles:
+
 - provider registration
 - resource group + key vault creation (if missing)
 - Bicep deployment
