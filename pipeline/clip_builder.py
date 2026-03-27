@@ -26,7 +26,14 @@ from config.settings import (
 from models.events import AlignedEvent, seconds_to_timestamp
 from models.game import GameState
 from models.highlight_query import HighlightQuery
-from utils.ffmpeg import FFmpegError, FFprobeError, concat_clips, cut_clip, get_video_duration
+from utils.ffmpeg import (
+    FFmpegError,
+    FFprobeError,
+    apply_segment_fades,
+    concat_clips,
+    cut_clip,
+    get_video_duration,
+)
 from utils.logger import get_logger
 from utils.storage import StorageBackend
 
@@ -51,10 +58,14 @@ def _interactive_confirm_overwrite(path: str) -> bool:
 def _query_slug(query: HighlightQuery) -> str:
     """Return a filesystem-safe slug from *query*.
 
-    Non-ASCII characters (e.g. accented letters) are dropped rather than
-    transliterated — this is acceptable for a local filename slug.
-    Falls back to query_type.value when raw_query is empty or all-special-chars.
+    Prefers the LLM-generated ``label`` when available; otherwise falls back
+    to a truncated version of ``raw_query``.  Non-ASCII characters are dropped
+    rather than transliterated — acceptable for a local filename slug.
     """
+    if query.label:
+        slug = re.sub(r"[^a-z0-9]+", "_", query.label.lower()).strip("_")[:40]
+        if slug:
+            return slug
     base = query.raw_query.lower()
     slug = re.sub(r"[^a-z0-9]+", "_", base).strip("_")[:40]
     return slug or query.query_type.value
@@ -208,7 +219,16 @@ def build_highlights(
     clips_dir = workspace / "clips"
     clips_dir.mkdir(exist_ok=True)
 
+    use_fades = FADE_DURATION_SECONDS > 0
+    concat_target = workspace / f"_concat_{slug}.mp4" if use_fades else output_path
+
     clip_paths: list[Path] = []
+    # Probed durations are used for fade timing.  Stream-copy cutting with
+    # input-side -ss seeks to the nearest keyframe *before* the requested
+    # start, so the actual clip file can be longer than (clip_end - clip_start)
+    # by up to one keyframe interval.  Using manifest estimates would place
+    # fade-outs too early in the concatenated timeline.
+    actual_durations: list[float] = []
     t_cut_start = time.monotonic()
     for i, clip_dict in enumerate(clips):
         clip_path = clips_dir / f"clip_{i:03d}.mp4"
@@ -225,20 +245,45 @@ def build_highlights(
                 clip_dict["clip_start"],
                 clip_dict["clip_end"],
                 clip_path,
-                fade_duration=FADE_DURATION_SECONDS,
             )
         except FFmpegError as exc:
             raise ClipBuilderError(f"Failed to cut clip {i}: {exc}") from exc
         clip_paths.append(clip_path)
+        if use_fades:
+            try:
+                actual_durations.append(get_video_duration(clip_path))
+            except FFprobeError:
+                fallback = clip_dict["clip_end"] - clip_dict["clip_start"]
+                log.warning(
+                    "Could not probe clip %d duration — using manifest estimate %.1fs", i, fallback
+                )
+                actual_durations.append(fallback)
     log.info("All %d clips cut in %.1f s", len(clips), time.monotonic() - t_cut_start)
 
-    log.info("Concatenating %d clips into final highlights…", len(clip_paths))
+    log.info("Concatenating %d clips…", len(clip_paths))
     t_concat = time.monotonic()
     try:
-        concat_clips(clip_paths, output_path)
+        concat_clips(clip_paths, concat_target)
     except FFmpegError as exc:
         raise ClipBuilderError(f"Failed to concatenate clips: {exc}") from exc
     log.info("Concatenation finished in %.1f s", time.monotonic() - t_concat)
+
+    if use_fades:
+        log.info("Applying per-segment fades (single encode pass)…")
+        t_fade = time.monotonic()
+        try:
+            apply_segment_fades(
+                concat_target,
+                output_path,
+                actual_durations,
+                FADE_DURATION_SECONDS,
+            )
+        except FFmpegError as exc:
+            raise ClipBuilderError(f"Failed to apply fades: {exc}") from exc
+        finally:
+            if concat_target.exists():
+                concat_target.unlink()
+        log.info("Fade encode finished in %.1f s", time.monotonic() - t_fade)
 
     manifest_duration = sum(c["clip_end"] - c["clip_start"] for c in clips)
     try:

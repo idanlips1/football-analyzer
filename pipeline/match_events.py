@@ -7,6 +7,7 @@ fixture and caches it as ``match_events.json`` in the video workspace folder.
 from __future__ import annotations
 
 import json
+import logging
 import time
 import urllib.request
 from typing import Any
@@ -92,64 +93,6 @@ def fetch_match_events(metadata: dict[str, Any], storage: StorageBackend) -> dic
     return result
 
 
-
-
-
-def fetch_filtered_events(metadata: dict[str, Any], hq: Any) -> dict[str, Any]:
-    """Fetch specific events from API-Football dynamically via HighlightQuery params.
-    Does not cache to disk."""
-    fixture_id: int | None = metadata.get("fixture_id")
-    if not fixture_id:
-        raise MatchEventsError("metadata is missing 'fixture_id' — cannot fetch match events")
-
-    if not API_FOOTBALL_KEY:
-        raise MatchEventsError("API_FOOTBALL_KEY is not set — add it to your .env file")
-
-    url = f"{API_FOOTBALL_BASE_URL}/fixtures/events?fixture={fixture_id}"
-    if hq.api_team_id:
-        url += f"&team={hq.api_team_id}"
-    if hq.api_player_id:
-        url += f"&player={hq.api_player_id}"
-    if hq.api_event_type:
-        url += f"&type={hq.api_event_type}"
-
-    log.info("Fetching filtered match events: %s", url)
-
-    req = urllib.request.Request(
-        url,
-        headers={
-            "x-rapidapi-key": API_FOOTBALL_KEY,
-            "x-rapidapi-host": "v3.football.api-sports.io",
-        },
-    )
-
-    t0 = time.monotonic()
-    try:
-        with urllib.request.urlopen(req) as resp:  # nosec B310
-            body: dict[str, Any] = json.loads(resp.read().decode())
-    except (urllib.error.URLError, json.JSONDecodeError) as exc:
-        raise MatchEventsError(f"Filtered API request failed: {exc}") from exc
-
-    elapsed = time.monotonic() - t0
-    log.info("API-Football filtered events response received in %.1f s", elapsed)
-
-    errors = body.get("errors")
-    if errors:
-        raise MatchEventsError(f"API-Football returned errors: {errors}")
-
-    raw_events: list[dict[str, Any]] = body.get("response", [])
-    log.info("API returned %d raw filtered events", len(raw_events))
-
-    parsed = _parse_events(raw_events)
-
-    return {
-        "video_id": metadata.get("video_id", ""),
-        "fixture_id": fixture_id,
-        "event_count": len(parsed),
-        "events": [ev.to_dict() for ev in parsed],
-    }
-
-
 # ── Private helpers ─────────────────────────────────────────────────────────
 
 
@@ -173,6 +116,8 @@ def _fetch_events(fixture_id: int) -> list[dict[str, Any]]:
         raise MatchEventsError(f"API request failed for fixture {fixture_id}: {exc}") from exc
     elapsed = time.monotonic() - t0
     log.info("API-Football events response received in %.1f s", elapsed)
+    if log.isEnabledFor(logging.DEBUG):
+        log.debug("API-Football raw response body:\n%s", json.dumps(body, indent=2))
 
     errors = body.get("errors")
     if errors:
@@ -219,8 +164,28 @@ def _determine_half(elapsed: int) -> str:
     return "Extra Time"
 
 
+def _build_canonical_names(raw_events: list[dict[str, Any]]) -> dict[int, str]:
+    """Map each player/assist ID to a single canonical name.
+
+    API-Football sometimes returns different spellings for the same player ID
+    (e.g. "P. Neto" for goals and "Pedro Neto" for cards).  We pick the longest
+    name variant as canonical — it's the most informative.
+    """
+    id_to_names: dict[int, set[str]] = {}
+    for raw in raw_events:
+        for key in ("player", "assist"):
+            info = raw.get(key, {}) or {}
+            pid = info.get("id")
+            name = info.get("name")
+            if pid and name:
+                id_to_names.setdefault(pid, set()).add(name)
+
+    return {pid: max(names, key=len) for pid, names in id_to_names.items()}
+
+
 def _parse_events(raw_events: list[dict[str, Any]]) -> list[MatchEvent]:
     """Convert raw API-Football event dicts into :class:`MatchEvent` objects."""
+    canonical = _build_canonical_names(raw_events)
     parsed: list[MatchEvent] = []
     for raw in raw_events:
         time_info = raw.get("time", {})
@@ -233,7 +198,16 @@ def _parse_events(raw_events: list[dict[str, Any]]) -> list[MatchEvent]:
 
         api_type: str = raw.get("type", "")
         detail: str = raw.get("detail", "")
-        assist_name: str | None = assist_info.get("name")
+
+        player_id = player_info.get("id")
+        fallback_player = player_info.get("name", "")
+        player_name = canonical.get(player_id, fallback_player) if player_id else fallback_player
+
+        assist_id = assist_info.get("id")
+        raw_assist: str | None = assist_info.get("name")
+        assist_name = (
+            canonical.get(assist_id, raw_assist) if assist_id and raw_assist else raw_assist
+        )
 
         parsed.append(
             MatchEvent(
@@ -242,7 +216,7 @@ def _parse_events(raw_events: list[dict[str, Any]]) -> list[MatchEvent]:
                 half=_determine_half(elapsed),
                 event_type=_map_event_type(api_type, detail),
                 team=team_info.get("name", ""),
-                player=player_info.get("name", ""),
+                player=player_name,
                 assist=assist_name,
                 score="",
                 detail=detail,

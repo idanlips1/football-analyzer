@@ -30,6 +30,8 @@ AZURE_OPENAI_DEPLOYMENT: str = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "")
 OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "")
 # Model name for OpenAI chat completions when using OPENAI_API_KEY.
 OPENAI_MODEL: str = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
+# To give label to the highlights video
+OPENAI_LABEL_MODEL: str = os.environ.get("OPENAI_LABEL_MODEL", "gpt-4.1-nano")
 
 # Scoring weights (must sum to 1.0 when scaled consistently)
 EXCITEMENT_ENERGY_WEIGHT: float = 0.10

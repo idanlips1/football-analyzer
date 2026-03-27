@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -61,7 +62,7 @@ class LocalStorage:
         return [
             d.name
             for d in sorted(self._root.iterdir())
-            if d.is_dir() and (d / "game.json").exists()
+            if d.is_dir() and (d / "game.json").exists() and (d / "aligned_events.json").exists()
         ]
 
     def upload_file(self, video_id: str, filename: str, local_path: Path) -> None:
@@ -99,7 +100,7 @@ class BlobStorage:
             "pipeline": container_pipeline,
             "highlights": container_highlights,
         }
-        self._temp_root = temp_root or Path("/tmp/football-analyzer")
+        self._temp_root = temp_root or Path(tempfile.gettempdir()) / "football-analyzer"
         self._temp_root.mkdir(parents=True, exist_ok=True)
 
     def _container_for_file(self, filename: str) -> str:
@@ -168,7 +169,11 @@ class BlobStorage:
             if len(parts) == 2:
                 vid, fname = parts
                 files_by_video.setdefault(vid, set()).add(fname)
-        return sorted(vid for vid, files in files_by_video.items() if "game.json" in files)
+        return sorted(
+            vid
+            for vid, files in files_by_video.items()
+            if "game.json" in files and "aligned_events.json" in files
+        )
 
     def upload_file(self, video_id: str, filename: str, local_path: Path) -> None:
         container_name = self._container_for_file(filename)

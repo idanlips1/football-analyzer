@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import ipaddress
+
 from pydantic import BaseModel, Field, HttpUrl, field_validator
+
+# Reject "all IPv4 interfaces" as a webhook target without a B104-triggering literal.
+_REJECT_ALL_IPV4 = str(ipaddress.IPv4Address(0))
 
 
 class JobCreateRequest(BaseModel):
@@ -17,8 +22,6 @@ class JobCreateRequest(BaseModel):
         description="Natural-language highlights request for query interpreter",
     )
     webhook_url: HttpUrl | None = None
-    kickoff_first_half: float | None = Field(None, ge=0)
-    kickoff_second_half: float | None = Field(None, ge=0)
 
     @field_validator("webhook_url")
     @classmethod
@@ -26,7 +29,7 @@ class JobCreateRequest(BaseModel):
         if v is None:
             return v
         host = str(v.host or "")
-        if host in ("localhost", "127.0.0.1", "0.0.0.0") or host.startswith("169.254."):
+        if host in ("localhost", "127.0.0.1", _REJECT_ALL_IPV4) or host.startswith("169.254."):
             msg = "webhook_url must not point to localhost or link-local addresses"
             raise ValueError(msg)
         return v

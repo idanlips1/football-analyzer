@@ -11,7 +11,7 @@ class GameRegistry:
         self._storage = storage
 
     def list_ready(self) -> list[GameState]:
-        """Return all games that have both game.json and aligned_events.json."""
+        """Return GameState for each fully ingested game (see ``StorageBackend.list_games``)."""
         games: list[GameState] = []
         for video_id in self._storage.list_games():
             data = self._storage.read_json(video_id, "game.json")

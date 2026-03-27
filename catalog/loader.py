@@ -20,7 +20,7 @@ class CatalogMatch:
     away_team: str
     competition: str
     season_label: str
-    events_snapshot: str
+    events_snapshot: str | None
     fixture_id: int | None
 
 
@@ -42,7 +42,7 @@ def load_catalog() -> list[CatalogMatch]:
                 away_team=row["away_team"],
                 competition=row["competition"],
                 season_label=row["season_label"],
-                events_snapshot=row["events_snapshot"],
+                events_snapshot=row.get("events_snapshot") or None,
                 fixture_id=int(fid) if fid is not None else None,
             )
         )

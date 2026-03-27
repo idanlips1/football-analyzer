@@ -108,7 +108,7 @@ def cut_clip(
 
     When *fade_duration* > 0, re-encodes with fade-to/from-black on both
     video and audio tracks (libx264 + AAC).  Otherwise uses stream copy
-    with accurate seeking (``-ss`` after ``-i``).
+    with fast input-side seeking (``-ss`` before ``-i``).
 
     Returns *output_path* on success.
     Raises FFmpegError if the cut fails.
@@ -151,10 +151,10 @@ def cut_clip(
         cmd = [
             "ffmpeg",
             "-y",
-            "-i",
-            str(video_path),
             "-ss",
             f"{start_seconds:.3f}",
+            "-i",
+            str(video_path),
             "-t",
             f"{duration:.3f}",
             "-c",
@@ -219,4 +219,90 @@ def concat_clips(clip_paths: list[Path], output_path: Path) -> Path:
 
     if not output_path.exists():
         raise FFmpegError(f"Concatenation produced no output at {output_path}")
+    return output_path
+
+
+def apply_segment_fades(
+    input_path: Path,
+    output_path: Path,
+    segment_durations: list[float],
+    fade_seconds: float,
+) -> Path:
+    """Re-encode *input_path* with per-segment fade-in/out on the concatenated timeline.
+
+    Each segment gets its own fade-to-black bookends at the boundaries implied
+    by *segment_durations*, matching the visual result of applying fades to
+    individual clips before concatenation — but in a single encode pass.
+
+    Returns *output_path* on success.
+    Raises FFmpegError on failure or if *segment_durations* is empty.
+    """
+    from config.settings import CLIP_AUDIO_BITRATE, CLIP_CRF
+
+    if not segment_durations:
+        raise FFmpegError("apply_segment_fades called with empty segment list")
+
+    vf_parts: list[str] = []
+    af_parts: list[str] = []
+    offset = 0.0
+    for dur in segment_durations:
+        fade = min(fade_seconds, dur / 2)
+        fade_out_start = offset + dur - fade
+        seg_end = offset + dur
+        # enable= restricts each filter to its own time window so a fade-out
+        # doesn't permanently zero all subsequent frames in the chain.
+        vf_parts.append(
+            f"fade=t=in:st={offset:.3f}:d={fade:.3f}"
+            f":enable='between(t,{offset:.3f},{offset + fade:.3f})'"
+        )
+        vf_parts.append(
+            f"fade=t=out:st={fade_out_start:.3f}:d={fade:.3f}"
+            f":enable='between(t,{fade_out_start:.3f},{seg_end:.3f})'"
+        )
+        af_parts.append(
+            f"afade=t=in:st={offset:.3f}:d={fade:.3f}"
+            f":enable='between(t,{offset:.3f},{offset + fade:.3f})'"
+        )
+        af_parts.append(
+            f"afade=t=out:st={fade_out_start:.3f}:d={fade:.3f}"
+            f":enable='between(t,{fade_out_start:.3f},{seg_end:.3f})'"
+        )
+        offset += dur
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(input_path),
+        "-vf",
+        ",".join(vf_parts),
+        "-af",
+        ",".join(af_parts),
+        "-c:v",
+        "libx264",
+        "-crf",
+        str(CLIP_CRF),
+        "-preset",
+        "ultrafast",
+        "-c:a",
+        "aac",
+        "-b:a",
+        CLIP_AUDIO_BITRATE,
+        str(output_path),
+    ]
+    log.info(
+        "Applying per-segment fades (%d segments) → %s",
+        len(segment_durations),
+        output_path.name,
+    )
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, check=True)  # nosec B603
+    except FileNotFoundError as exc:
+        raise FFmpegError(
+            "ffmpeg not found — install FFmpeg (https://ffmpeg.org/download.html)"
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        raise FFmpegError(f"ffmpeg fade encode failed: {exc.stderr.strip()}") from exc
+    if not output_path.exists():
+        raise FFmpegError(f"Fade encode produced no output at {output_path}")
     return output_path

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import suppress
 
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
@@ -37,22 +38,23 @@ async def create_job(request: JobCreateRequest) -> JSONResponse:
             },
         )
 
-    if request.kickoff_first_half is None and request.kickoff_second_half is None:
-        qhash = _job_cache_key(request.match_id, request.highlights_query)
-        try:
-            recent = job_store.list_recent(limit=100)
-            for existing in recent:
-                if (
-                    existing.status.value == "completed"
-                    and existing.result
-                    and _job_cache_key(existing.match_id, existing.highlights_query) == qhash
-                ):
-                    return JSONResponse(
-                        status_code=200,
-                        content=existing.to_dict(),
-                    )
-        except Exception:  # noqa: BLE001
-            pass
+    qhash = _job_cache_key(request.match_id, request.highlights_query)
+    with suppress(Exception):
+        recent = job_store.list_recent(limit=100)
+        for existing in recent:
+            if (
+                existing.status.value == "completed"
+                and existing.result
+                and _job_cache_key(existing.match_id, existing.highlights_query) == qhash
+            ):
+                return JSONResponse(
+                    status_code=200,
+                    content=JobCreateResponse(
+                        job_id=existing.job_id,
+                        status=existing.status.value,
+                        poll_url=f"/api/v1/jobs/{existing.job_id}",
+                    ).model_dump(),
+                )
 
     label = f"{entry.title} — {request.highlights_query}"
     job = Job(
@@ -68,8 +70,6 @@ async def create_job(request: JobCreateRequest) -> JSONResponse:
             "match_id": job.match_id,
             "highlights_query": job.highlights_query,
             "webhook_url": job.webhook_url,
-            "kickoff_first_half": request.kickoff_first_half,
-            "kickoff_second_half": request.kickoff_second_half,
         }
     )
 
