@@ -418,12 +418,20 @@ class TestRunCatalogPipelineNoApiCalls:
         mock_hq.query_type.value = "full_summary"
         mock_hq.label = "goals"
 
+        # Patch the deleted functions at the module level where they used to be imported.
+        # If run_catalog_pipeline accidentally calls them, the mock lets us assert_not_called.
         with patch("pipeline.catalog_pipeline.interpret_query", return_value=mock_hq) as mock_interp, \
              patch("pipeline.catalog_pipeline.filter_events", return_value=[]), \
-             patch("pipeline.catalog_pipeline.build_highlights", return_value={"highlights_path": "/tmp/h.mp4", "clip_count": 0, "total_duration_seconds": 0.0}):
+             patch("pipeline.catalog_pipeline.build_highlights", return_value={"highlights_path": "/tmp/h.mp4", "clip_count": 0, "total_duration_seconds": 0.0}), \
+             patch("pipeline.match_events.fetch_filtered_events", create=True) as mock_fetch, \
+             patch("pipeline.event_aligner.align_events") as mock_align:
             from pipeline.catalog_pipeline import run_catalog_pipeline
 
             run_catalog_pipeline("istanbul-2005", "goals", storage)
+
+        # These must never be called at query time
+        mock_fetch.assert_not_called()
+        mock_align.assert_not_called()
 
         # interpret_query must receive player_names as list[str], not AlignedEvent objects
         call_args = mock_interp.call_args
@@ -1171,14 +1179,10 @@ entry_events_snapshot = entry.events_snapshot if entry else None
 
 - [ ] **Step 4: Update `test_game_json_written_after_successful_ingest` to skip fixture selection**
 
-Now that `_pick_fixture_interactive` runs when `events_snapshot` is falsy, the existing `TestIngestWritesGameJson.test_game_json_written_after_successful_ingest` test needs `events_snapshot` set to a truthy value in `fake_metadata` so step 4 is skipped, and a mock for `_pick_fixture_interactive` as a safety net:
+> **Important:** The fixture-selection skip condition reads `entry.events_snapshot` from the catalog entry returned by `get_match(match_id)`, NOT from `fake_metadata`. Adding `events_snapshot` to `fake_metadata` does nothing for the skip condition.
 
-```python
-# In fake_metadata dict, add:
-"events_snapshot": "istanbul-2005",  # truthy → skips fixture selection
-```
+The correct fix is to add `patch("ingest._pick_fixture_interactive")` as a mock in the `with (...)` block (this is sufficient regardless of what catalog returns):
 
-Also add to the `with (...)` block:
 ```python
 patch("ingest._pick_fixture_interactive") as mock_pick,
 ```
@@ -1187,6 +1191,8 @@ And after the call, assert:
 ```python
 mock_pick.assert_not_called()
 ```
+
+The `"fixture_id": None` change (from Task 6 Step 3) must also be in place.
 
 - [ ] **Step 5: Add test confirming snapshot match skips fixture selection**
 
