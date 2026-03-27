@@ -66,11 +66,11 @@ class TestIngestLocalCatalogMatch:
         assert storage.local_path("istanbul-2005", "metadata.json").exists()
         assert storage.local_path("istanbul-2005", "match.mp4").exists()
 
-    def test_unknown_match_id(self, tmp_path: Path) -> None:
+    def test_empty_match_id_rejected(self, tmp_path: Path) -> None:
         storage = LocalStorage(root=tmp_path / "ws")
         src = self._src_mp4(tmp_path)
-        with pytest.raises(IngestionError, match="Unknown match_id"):
-            ingest_local_catalog_match("not-in-catalog-xyz", src, storage)
+        with pytest.raises(IngestionError, match="match_id is empty"):
+            ingest_local_catalog_match("   ", src, storage)
 
     def test_rejects_short_video(
         self,

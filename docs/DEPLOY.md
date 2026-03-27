@@ -30,7 +30,14 @@ export IMAGE_TAG="latest"
 
 ### Curated matches (no YouTube in the worker)
 
-Videos are **uploaded ahead of time** to blob storage (`videos/<match_id>/match.mp4` + `metadata.json`). Use `scripts/upload_catalog_match.py` from a machine that has the files (optional: `requirements-tools.txt` includes yt-dlp only for operator-side download). The API only accepts jobs for known catalog ids — list them with `GET /api/v1/matches`.
+Videos are **uploaded ahead of time** to blob storage (`videos/<match_id>/match.mp4` + `metadata.json`).
+
+Operator options:
+
+- `scripts/upload_catalog_match.py`: upload a local `.mp4` (or a specific YouTube URL)
+- `scripts/ingest_youtube_query.py`: end-to-end helper — **search YouTube from free text**, confirm by **title + duration**, add/update the catalog entry, download, and run ingestion
+
+The API only accepts jobs for known catalog ids — list them with `GET /api/v1/matches`.
 
 ## 2. Run one-shot deployment script
 

@@ -8,12 +8,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from catalog.loader import load_catalog
 from models.job import Job, JobResult, JobStatus
 from utils.job_queue import InMemoryQueue
 from utils.job_store import InMemoryJobStore
 
 _VALID_MATCH = "istanbul-2005"
+_OTHER_MATCH = "barcelona-psg-2017"
 
 
 @pytest.fixture()
@@ -29,7 +29,7 @@ def queue() -> InMemoryQueue:
 @pytest.fixture()
 def mock_storage() -> MagicMock:
     storage = MagicMock()
-    storage.list_games.return_value = [m.match_id for m in load_catalog()]
+    storage.list_games.return_value = [_VALID_MATCH, _OTHER_MATCH]
     return storage
 
 
@@ -135,7 +135,7 @@ def test_list_jobs_with_results(client: TestClient) -> None:
     )
     client.post(
         "/api/v1/jobs",
-        json={"match_id": "barcelona-psg-2017"},
+        json={"match_id": _OTHER_MATCH},
         headers=HEADERS,
     )
     response = client.get("/api/v1/jobs", headers=HEADERS)

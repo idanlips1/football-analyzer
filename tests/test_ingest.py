@@ -74,7 +74,6 @@ class TestIngestWritesGameJson:
             "video_filename": "match.mp4",
             "source": "catalog:istanbul-2005",
             "duration_seconds": 5400.0,
-            "events_snapshot": "istanbul-2005",
         }
 
         fake_transcription = {
@@ -87,7 +86,7 @@ class TestIngestWritesGameJson:
             patch("pipeline.transcription.transcribe", return_value=fake_transcription),
             patch("ingest.fetch_match_events", return_value={"event_count": 0, "events": []}),
             patch("ingest.align_events", return_value={"event_count": 0, "events": []}),
-            patch("ingest._pick_fixture_interactive") as mock_pick,
+            patch("ingest._pick_fixture_interactive", return_value=None) as mock_pick,
             patch("builtins.input", lambda _: "/tmp/fake.mp4"),
         ):
             _run_catalog_ingest(
@@ -96,7 +95,7 @@ class TestIngestWritesGameJson:
                 confirm_kickoffs_fn=lambda a, b: (330.0, 3420.0),
             )
 
-        mock_pick.assert_not_called()
+        mock_pick.assert_called_once()
         game_data = tmp_storage.read_json("istanbul-2005", "game.json")
         assert game_data["home_team"] == "Liverpool"
         assert game_data["kickoff_first_half"] == 330.0
@@ -139,7 +138,6 @@ class TestIngestFetchesAndAlignsEvents:
             "video_filename": "match.mp4",
             "source": "catalog:istanbul-2005",
             "duration_seconds": 5400.0,
-            "events_snapshot": "istanbul-2005",
         }
         fake_transcription = {
             "kickoff_first_half": 330.0,
@@ -153,7 +151,7 @@ class TestIngestFetchesAndAlignsEvents:
             patch("pipeline.transcription.transcribe", return_value=fake_transcription),
             patch("ingest.fetch_match_events", return_value=fake_events) as mock_fetch,
             patch("ingest.align_events", return_value=fake_aligned) as mock_align,
-            patch("ingest._pick_fixture_interactive"),
+            patch("ingest._pick_fixture_interactive", return_value=None),
             patch("builtins.input", lambda _: "/tmp/fake.mp4"),
         ):
             _run_catalog_ingest(
@@ -168,7 +166,7 @@ class TestIngestFetchesAndAlignsEvents:
         assert align_kwargs.get("force_recompute") is False
         assert align_kwargs.get("save_to_disk") is True
 
-    def test_fixture_id_written_as_none_for_snapshot_match(self, tmp_storage: LocalStorage) -> None:
+    def test_fixture_id_written_as_none_when_no_fixture_selected(self, tmp_storage: LocalStorage) -> None:
         from unittest.mock import patch
 
         from ingest import _run_catalog_ingest
@@ -183,7 +181,6 @@ class TestIngestFetchesAndAlignsEvents:
             "video_filename": "match.mp4",
             "source": "catalog:istanbul-2005",
             "duration_seconds": 5400.0,
-            "events_snapshot": "istanbul-2005",
         }
         fake_transcription = {"kickoff_first_half": 330.0, "kickoff_second_half": 3420.0}
         fake_events = {"video_id": "istanbul-2005", "event_count": 0, "events": []}
@@ -194,7 +191,7 @@ class TestIngestFetchesAndAlignsEvents:
             patch("pipeline.transcription.transcribe", return_value=fake_transcription),
             patch("ingest.fetch_match_events", return_value=fake_events),
             patch("ingest.align_events", return_value=fake_aligned),
-            patch("ingest._pick_fixture_interactive"),
+            patch("ingest._pick_fixture_interactive", return_value=None),
             patch("builtins.input", lambda _: "/tmp/fake.mp4"),
         ):
             _run_catalog_ingest(
@@ -206,7 +203,7 @@ class TestIngestFetchesAndAlignsEvents:
         game_data = tmp_storage.read_json("istanbul-2005", "game.json")
         assert game_data["fixture_id"] is None
 
-    def test_pick_fixture_not_called_for_snapshot_match(self, tmp_storage: LocalStorage) -> None:
+    def test_pick_fixture_called_when_fixture_id_missing(self, tmp_storage: LocalStorage) -> None:
         from unittest.mock import patch
 
         from ingest import _run_catalog_ingest
@@ -221,7 +218,6 @@ class TestIngestFetchesAndAlignsEvents:
             "video_filename": "match.mp4",
             "source": "catalog:istanbul-2005",
             "duration_seconds": 5400.0,
-            "events_snapshot": "istanbul-2005",
         }
         fake_transcription = {"kickoff_first_half": 330.0, "kickoff_second_half": 3420.0}
 
@@ -230,7 +226,7 @@ class TestIngestFetchesAndAlignsEvents:
             patch("pipeline.transcription.transcribe", return_value=fake_transcription),
             patch("ingest.fetch_match_events", return_value={"event_count": 0, "events": []}),
             patch("ingest.align_events", return_value={"event_count": 0, "events": []}),
-            patch("ingest._pick_fixture_interactive") as mock_pick,
+            patch("ingest._pick_fixture_interactive", return_value=None) as mock_pick,
             patch("builtins.input", lambda _: "/tmp/fake.mp4"),
         ):
             _run_catalog_ingest(
@@ -239,7 +235,7 @@ class TestIngestFetchesAndAlignsEvents:
                 confirm_kickoffs_fn=lambda a, b: (330.0, 3420.0),
             )
 
-        mock_pick.assert_not_called()
+        mock_pick.assert_called_once()
 
 
 class TestPickFixtureInteractive:

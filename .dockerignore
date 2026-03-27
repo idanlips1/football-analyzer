@@ -11,7 +11,6 @@ __pycache__
 pipeline_workspace
 tests
 docs
-catalog/snapshots
 *.md
 !requirements*.txt
 infra

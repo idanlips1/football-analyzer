@@ -242,7 +242,6 @@ def _run_catalog_ingest(
     confirm_kickoffs_fn: ConfirmKickoffsFn = _confirm_kickoffs_interactive,
 ) -> None:
     entry = _get_catalog_match(match_id)
-    entry_events_snapshot = entry.events_snapshot if entry else None
 
     path_raw = input("  Path to local full-match .mp4 or YouTube URL: ").strip()
     if not path_raw:
@@ -279,20 +278,17 @@ def _run_catalog_ingest(
     if k_first is None or k_second is None:
         raise CatalogPipelineError("Could not confirm kickoff timestamps.")
 
-    if not entry_events_snapshot:
-        print("\n[4/7] Searching API-Football for fixture…")
-        picked = _pick_fixture_interactive(
-            metadata["home_team"],
-            metadata["away_team"],
-            metadata.get("season_label", ""),
-        )
-        if picked is None:
-            print("  No fixture selected — game.json will have fixture_id=None.")
-        else:
-            print(f"  Fixture {picked} selected.")
-            metadata["fixture_id"] = picked
+    print("\n[4/7] Searching API-Football for fixture…")
+    picked = _pick_fixture_interactive(
+        metadata["home_team"],
+        metadata["away_team"],
+        metadata.get("season_label", ""),
+    )
+    if picked is None:
+        print("  No fixture selected — game.json will have fixture_id=None.")
     else:
-        print("\n[4/7] Snapshot match — skipping fixture selection.")
+        print(f"  Fixture {picked} selected.")
+        metadata["fixture_id"] = picked
 
     print("\n[5/7] Writing game.json…")
     from models.game import GameState

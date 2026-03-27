@@ -10,7 +10,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from catalog.loader import get_match
 from config.settings import MIN_DURATION_SECONDS, PIPELINE_WORKSPACE
 from utils.ffmpeg import FFprobeError, get_video_duration
 from utils.logger import get_logger
@@ -56,19 +55,17 @@ def ingest_local_catalog_match(
 ) -> dict[str, Any]:
     """Copy a local ``.mp4`` into storage as ``<match_id>/match.mp4`` and write metadata.
 
-    ``match_id`` must exist in the curated catalog (``catalog/data/matches.json``).
+    ``match_id`` becomes the storage folder key (e.g. ``videos/<match_id>/match.mp4`` on Azure).
     """
-    entry = get_match(match_id)
-    if entry is None:
-        raise IngestionError(f"Unknown match_id: {match_id!r}")
-
     src = source_mp4.expanduser().resolve()
     if not src.is_file():
         raise IngestionError(f"Not a file: {src}")
     if src.suffix.lower() != ".mp4":
         raise IngestionError("Source must be a .mp4 file")
 
-    video_id = entry.match_id
+    video_id = match_id.strip()
+    if not video_id:
+        raise IngestionError("match_id is empty")
     storage.workspace_path(video_id)
     storage.upload_file(video_id, "match.mp4", src)
     dest = storage.local_path(video_id, "match.mp4")
@@ -85,12 +82,11 @@ def ingest_local_catalog_match(
         "source": f"catalog:{video_id}",
         "video_filename": "match.mp4",
         "duration_seconds": duration,
-        "events_snapshot": entry.events_snapshot,
-        "fixture_id": entry.fixture_id,
-        "home_team": entry.home_team,
-        "away_team": entry.away_team,
-        "competition": entry.competition,
-        "season_label": entry.season_label,
+        "fixture_id": None,
+        "home_team": "",
+        "away_team": "",
+        "competition": "",
+        "season_label": "",
     }
     storage.write_json(video_id, "metadata.json", metadata)
     log.info("Stage 1 complete — %s → %s", src, dest)

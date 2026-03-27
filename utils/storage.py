@@ -59,11 +59,14 @@ class LocalStorage:
     def list_games(self) -> list[str]:
         if not self._root.exists():
             return []
-        return [
-            d.name
-            for d in sorted(self._root.iterdir())
-            if d.is_dir() and (d / "game.json").exists() and (d / "aligned_events.json").exists()
-        ]
+        # List uploaded videos (match.mp4 + metadata.json), not necessarily fully ingested.
+        out: list[str] = []
+        for d in sorted(self._root.iterdir()):
+            if not d.is_dir():
+                continue
+            if (d / "match.mp4").exists() and (d / "metadata.json").exists():
+                out.append(d.name)
+        return out
 
     def upload_file(self, video_id: str, filename: str, local_path: Path) -> None:
         dest = self.local_path(video_id, filename)
@@ -161,18 +164,20 @@ class BlobStorage:
         return path
 
     def list_games(self) -> list[str]:
-        container = self._client.get_container_client(self._containers["pipeline"])
+        # List uploaded videos in the videos container (match.mp4 + metadata.json).
+        container = self._client.get_container_client(self._containers["videos"])
         blobs = container.list_blobs()
         files_by_video: dict[str, set[str]] = {}
         for blob in blobs:
             parts = blob.name.split("/", 1)
-            if len(parts) == 2:
-                vid, fname = parts
-                files_by_video.setdefault(vid, set()).add(fname)
+            if len(parts) != 2:
+                continue
+            vid, fname = parts
+            files_by_video.setdefault(vid, set()).add(fname)
         return sorted(
             vid
             for vid, files in files_by_video.items()
-            if "game.json" in files and "aligned_events.json" in files
+            if "match.mp4" in files and "metadata.json" in files
         )
 
     def upload_file(self, video_id: str, filename: str, local_path: Path) -> None:

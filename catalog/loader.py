@@ -20,7 +20,6 @@ class CatalogMatch:
     away_team: str
     competition: str
     season_label: str
-    events_snapshot: str | None
     fixture_id: int | None
 
 
@@ -42,7 +41,6 @@ def load_catalog() -> list[CatalogMatch]:
                 away_team=row["away_team"],
                 competition=row["competition"],
                 season_label=row["season_label"],
-                events_snapshot=row.get("events_snapshot") or None,
                 fixture_id=int(fid) if fid is not None else None,
             )
         )
@@ -71,8 +69,3 @@ def get_match(match_id: str) -> CatalogMatch | None:
         if m.match_id == mid:
             return m
     return None
-
-
-def snapshot_json_path(events_snapshot: str) -> Path:
-    """Path to bundled ``match_events``-shaped JSON for this snapshot key."""
-    return _PACKAGE_DIR / "snapshots" / f"{events_snapshot}.json"

@@ -32,33 +32,11 @@ class MatchEventsError(Exception):
 def fetch_match_events(metadata: dict[str, Any], storage: StorageBackend) -> dict[str, Any]:
     """Fetch match events for a fixture and cache them.
 
-    If ``metadata`` contains ``events_snapshot``, bundled JSON (see
-    ``catalog/snapshots``) is copied into the workspace instead of calling
-    API-Football.
-
-    Otherwise *metadata* must contain ``fixture_id`` for the API path.
+    *metadata* must contain ``fixture_id`` for the API path.
     """
     video_id: str = metadata.get("video_id", "")
-    snapshot_key = metadata.get("events_snapshot")
 
     cache_path = storage.local_path(video_id, MATCH_EVENTS_FILENAME)
-
-    if snapshot_key:
-        if cache_path.exists():
-            log.info("Match events cache hit (catalog) for %s", video_id)
-            return storage.read_json(video_id, MATCH_EVENTS_FILENAME)
-        from catalog.loader import snapshot_json_path
-
-        snap_path = snapshot_json_path(str(snapshot_key))
-        if not snap_path.is_file():
-            raise MatchEventsError(f"Bundled events snapshot not found: {snap_path}")
-        raw_snap: dict[str, Any] = json.loads(snap_path.read_text(encoding="utf-8"))
-        raw_snap["video_id"] = video_id
-        if metadata.get("fixture_id") is not None:
-            raw_snap["fixture_id"] = metadata["fixture_id"]
-        storage.write_json(video_id, MATCH_EVENTS_FILENAME, raw_snap)
-        log.info("Loaded match events from catalog snapshot %s", snapshot_key)
-        return raw_snap
 
     fixture_id: int | None = metadata.get("fixture_id")
 

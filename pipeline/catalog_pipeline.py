@@ -31,7 +31,6 @@ def merge_catalog_metadata(
     meta["away_team"] = entry.away_team
     meta["competition"] = entry.competition
     meta["season_label"] = entry.season_label
-    meta["events_snapshot"] = entry.events_snapshot
     meta["catalog_title"] = entry.title
     if entry.fixture_id is not None:
         meta["fixture_id"] = entry.fixture_id

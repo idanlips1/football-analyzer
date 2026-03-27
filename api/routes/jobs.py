@@ -5,13 +5,14 @@ from __future__ import annotations
 import hashlib
 from contextlib import suppress
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 
-from api.dependencies import get_job_queue, get_job_store
+from api.dependencies import get_job_queue, get_job_store, get_storage
 from api.schemas import JobCreateRequest, JobCreateResponse
-from catalog.loader import get_match
 from models.job import Job
+from utils.storage import StorageBackend
+from utils.storage import StorageError
 
 router = APIRouter()
 
@@ -22,18 +23,39 @@ def _job_cache_key(match_id: str, highlights_query: str) -> str:
 
 
 @router.post("/jobs")
-async def create_job(request: JobCreateRequest) -> JSONResponse:
+async def create_job(
+    request: JobCreateRequest,
+    storage: StorageBackend = Depends(get_storage),  # noqa: B008
+) -> JSONResponse:
     job_store = get_job_store()
     queue = get_job_queue()
 
-    entry = get_match(request.match_id)
-    if entry is None:
+    match_id = request.match_id.strip()
+    if match_id not in set(storage.list_games()):
         return JSONResponse(
             status_code=400,
             content={
                 "error": {
                     "code": "unknown_match",
                     "message": f"Unknown match_id: {request.match_id!r}. Use GET /api/v1/matches.",
+                }
+            },
+        )
+
+    # Require ingestion artifacts (query-time pipeline needs these).
+    try:
+        storage.read_json(match_id, "game.json")
+        storage.read_json(match_id, "aligned_events.json")
+    except StorageError:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": {
+                    "code": "not_ingested",
+                    "message": (
+                        f"Match {match_id!r} is uploaded but not ingested yet. "
+                        "Run the ingest pipeline to create game.json and aligned_events.json."
+                    ),
                 }
             },
         )
@@ -56,9 +78,9 @@ async def create_job(request: JobCreateRequest) -> JSONResponse:
                     ).model_dump(),
                 )
 
-    label = f"{entry.title} — {request.highlights_query}"
+    label = f"{match_id} — {request.highlights_query}"
     job = Job(
-        match_id=request.match_id.strip(),
+        match_id=match_id,
         highlights_query=request.highlights_query,
         query=label,
         webhook_url=str(request.webhook_url) if request.webhook_url else None,

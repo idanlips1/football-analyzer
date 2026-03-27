@@ -117,6 +117,11 @@ mypy .
 bandit -r . -c pyproject.toml
 ```
 
+## Azure
+
+- Deployment: see `docs/DEPLOY.md`
+- Teammate access (RBAC): see `docs/AZURE_RBAC.md`
+
 ## Legacy pipeline
 
 Modules such as `pipeline/excitement.py`, `pipeline/edr.py`, and `pipeline/filtering.py` implement an older audio/LLM-based path and are not used by the default pipeline.

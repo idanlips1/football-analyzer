@@ -161,23 +161,6 @@ class TestAlignedEvent:
         assert AlignedEvent.from_dict(event.to_dict()) == event
 
 
-class TestCatalogMatch:
-    def test_events_snapshot_can_be_none(self) -> None:
-        from catalog.loader import CatalogMatch
-
-        m = CatalogMatch(
-            match_id="test",
-            title="Test",
-            home_team="A",
-            away_team="B",
-            competition="Test",
-            season_label="2024",
-            events_snapshot=None,
-            fixture_id=12345,
-        )
-        assert m.events_snapshot is None
-
-
 class TestGameState:
     def test_fixture_id_can_be_none(self) -> None:
         g = GameState(
