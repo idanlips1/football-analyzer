@@ -406,6 +406,19 @@ class TestBuildHighlights:
         output_path.write_bytes(b"clip")
         return output_path
 
+    def _mock_ffmpeg(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Patch cut/concat/fades/probe so no real FFmpeg is needed."""
+        monkeypatch.setattr("pipeline.clip_builder.cut_clip", lambda *a, **kw: None)
+        monkeypatch.setattr(
+            "pipeline.clip_builder.concat_clips",
+            lambda paths, out: out.write_bytes(b""),
+        )
+        monkeypatch.setattr(
+            "pipeline.clip_builder.apply_segment_fades",
+            lambda inp, out, durations, fade: out.write_bytes(b""),
+        )
+        monkeypatch.setattr("pipeline.clip_builder.get_video_duration", lambda _: 120.0)
+
     def test_build_creates_highlights(
         self, tmp_storage: LocalStorage, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -414,12 +427,7 @@ class TestBuildHighlights:
         ws = tmp_storage.workspace_path(video_id)
         (ws / "video.mp4").write_bytes(b"fake")
 
-        monkeypatch.setattr("pipeline.clip_builder.cut_clip", lambda *a, **kw: None)
-        monkeypatch.setattr(
-            "pipeline.clip_builder.concat_clips",
-            lambda paths, out: out.write_bytes(b""),
-        )
-        monkeypatch.setattr("pipeline.clip_builder.get_video_duration", lambda _: 120.0)
+        self._mock_ffmpeg(monkeypatch)
 
         q = HighlightQuery(query_type=QueryType.FULL_SUMMARY, raw_query="summary")
         result = build_highlights(
@@ -440,12 +448,7 @@ class TestBuildHighlights:
         ws = tmp_storage.workspace_path(video_id)
         (ws / "video.mp4").write_bytes(b"fake")
 
-        monkeypatch.setattr("pipeline.clip_builder.cut_clip", lambda *a, **kw: None)
-        monkeypatch.setattr(
-            "pipeline.clip_builder.concat_clips",
-            lambda paths, out: out.write_bytes(b""),
-        )
-        monkeypatch.setattr("pipeline.clip_builder.get_video_duration", lambda _: 120.0)
+        self._mock_ffmpeg(monkeypatch)
 
         q = HighlightQuery(query_type=QueryType.FULL_SUMMARY, raw_query="summary")
         result = build_highlights(
@@ -472,6 +475,61 @@ class TestBuildHighlights:
             confirm_overwrite_fn=lambda _: False,
         )
         assert "highlights_path" in result
+
+    def test_actual_clip_durations_used_for_fades(
+        self, tmp_storage: LocalStorage, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Fade timing must use probed clip durations, not manifest estimates.
+
+        Stream-copy cutting with input-side -ss seeking can produce clips that
+        are longer than (clip_end - clip_start) by up to one keyframe interval.
+        Passing manifest estimates to apply_segment_fades would place fade-outs
+        too early; probed actual durations fix the alignment.
+        """
+        from config.settings import FADE_DURATION_SECONDS
+
+        if FADE_DURATION_SECONDS <= 0:
+            pytest.skip("Fades disabled in config")
+
+        video_id = "test_video"
+        game = _make_game(tmp_storage, video_id)
+        ws = tmp_storage.workspace_path(video_id)
+        (ws / "video.mp4").write_bytes(b"fake")
+
+        probed_clip_duration = 47.5  # simulates keyframe-alignment overshoot
+
+        captured: dict[str, Any] = {}
+
+        def mock_get_duration(path: Path) -> float:
+            if "clip_" in path.name:
+                return probed_clip_duration
+            return 120.0  # final highlights probe
+
+        def mock_apply_fades(inp: Path, out: Path, durations: list[float], fade: float) -> None:
+            captured["durations"] = list(durations)
+            out.write_bytes(b"")
+
+        monkeypatch.setattr("pipeline.clip_builder.cut_clip", lambda *a, **kw: None)
+        monkeypatch.setattr(
+            "pipeline.clip_builder.concat_clips",
+            lambda paths, out: out.write_bytes(b""),
+        )
+        monkeypatch.setattr("pipeline.clip_builder.apply_segment_fades", mock_apply_fades)
+        monkeypatch.setattr("pipeline.clip_builder.get_video_duration", mock_get_duration)
+
+        q = HighlightQuery(query_type=QueryType.FULL_SUMMARY, raw_query="summary")
+        build_highlights(
+            _make_aligned_events(),
+            game,
+            q,
+            tmp_storage,
+            confirm_overwrite_fn=lambda _: True,
+        )
+
+        assert "durations" in captured, "apply_segment_fades was not called"
+        assert captured["durations"] == [probed_clip_duration], (
+            "apply_segment_fades received manifest estimates instead of probed durations"
+        )
 
     def test_empty_events_raises_error(self, tmp_storage: LocalStorage) -> None:
         game = _make_game(tmp_storage)

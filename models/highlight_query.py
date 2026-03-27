@@ -25,3 +25,4 @@ class HighlightQuery:
     api_event_type: str | None = None
     minute_from: int | None = None
     minute_to: int | None = None
+    label: str = ""

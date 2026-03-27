@@ -1,4 +1,4 @@
-"""Tests for utils/ffmpeg.py — cut_clip with fade and stream-copy paths."""
+"""Tests for utils/ffmpeg.py — cut_clip, apply_segment_fades, and stream-copy paths."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from utils.ffmpeg import FFmpegError, cut_clip
+from utils.ffmpeg import FFmpegError, apply_segment_fades, cut_clip
 
 
 def _fake_run_success(
@@ -25,7 +25,7 @@ def _fake_run_success(
 class TestCutClipStreamCopy:
     """Stream-copy path (fade_duration=0)."""
 
-    def test_ss_after_input_for_accurate_seek(self, tmp_path: Path) -> None:
+    def test_ss_before_input_for_fast_seek(self, tmp_path: Path) -> None:
         src = tmp_path / "src.mp4"
         src.write_bytes(b"video")
         out = tmp_path / "out.mp4"
@@ -34,10 +34,9 @@ class TestCutClipStreamCopy:
             cut_clip(src, 100.0, 145.0, out, fade_duration=0.0)
 
         cmd = mock.call_args[0][0]
-        # -i should come BEFORE -ss for accurate seeking
-        i_idx = cmd.index("-i")
         ss_idx = cmd.index("-ss")
-        assert i_idx < ss_idx, "-ss must come after -i for accurate seeking"
+        i_idx = cmd.index("-i")
+        assert ss_idx < i_idx, "-ss must come before -i for fast input-side seeking"
 
     def test_uses_duration_not_to(self, tmp_path: Path) -> None:
         src = tmp_path / "src.mp4"
@@ -153,3 +152,75 @@ class TestCutClipErrors:
             pytest.raises(FFmpegError, match="ffmpeg not found"),
         ):
             cut_clip(src, 0.0, 10.0, out)
+
+
+class TestApplySegmentFades:
+    """Single-pass fade encode over a concatenated timeline."""
+
+    def test_filter_chain_for_two_segments(self, tmp_path: Path) -> None:
+        src = tmp_path / "concat.mp4"
+        src.write_bytes(b"video")
+        out = tmp_path / "faded.mp4"
+
+        with patch("utils.ffmpeg.subprocess.run", side_effect=_fake_run_success) as mock:
+            apply_segment_fades(src, out, [30.0, 15.0], fade_seconds=0.5)
+
+        cmd = mock.call_args[0][0]
+        vf = cmd[cmd.index("-vf") + 1]
+        af = cmd[cmd.index("-af") + 1]
+
+        # Segment 0: offset=0, dur=30, fade=0.5 → in st=0, out st=29.5
+        assert "fade=t=in:st=0.000:d=0.500:enable='between(t,0.000,0.500)'" in vf
+        assert "fade=t=out:st=29.500:d=0.500:enable='between(t,29.500,30.000)'" in vf
+        # Segment 1: offset=30, dur=15, fade=0.5 → in st=30, out st=44.5
+        assert "fade=t=in:st=30.000:d=0.500:enable='between(t,30.000,30.500)'" in vf
+        assert "fade=t=out:st=44.500:d=0.500:enable='between(t,44.500,45.000)'" in vf
+
+        assert "afade=t=in:st=0.000:d=0.500:enable='between(t,0.000,0.500)'" in af
+        assert "afade=t=out:st=29.500:d=0.500:enable='between(t,29.500,30.000)'" in af
+        assert "afade=t=in:st=30.000:d=0.500:enable='between(t,30.000,30.500)'" in af
+        assert "afade=t=out:st=44.500:d=0.500:enable='between(t,44.500,45.000)'" in af
+
+    def test_fade_clamped_for_short_segment(self, tmp_path: Path) -> None:
+        src = tmp_path / "concat.mp4"
+        src.write_bytes(b"video")
+        out = tmp_path / "faded.mp4"
+
+        # 0.6s segment with 1.0s fade → clamp to 0.3s
+        with patch("utils.ffmpeg.subprocess.run", side_effect=_fake_run_success) as mock:
+            apply_segment_fades(src, out, [0.6], fade_seconds=1.0)
+
+        cmd = mock.call_args[0][0]
+        vf = cmd[cmd.index("-vf") + 1]
+        assert "d=0.300" in vf
+
+    def test_uses_libx264_and_aac(self, tmp_path: Path) -> None:
+        src = tmp_path / "concat.mp4"
+        src.write_bytes(b"video")
+        out = tmp_path / "faded.mp4"
+
+        with patch("utils.ffmpeg.subprocess.run", side_effect=_fake_run_success) as mock:
+            apply_segment_fades(src, out, [10.0], fade_seconds=0.5)
+
+        cmd = mock.call_args[0][0]
+        assert cmd[cmd.index("-c:v") + 1] == "libx264"
+        assert cmd[cmd.index("-c:a") + 1] == "aac"
+
+    def test_empty_segments_raises(self, tmp_path: Path) -> None:
+        src = tmp_path / "concat.mp4"
+        src.write_bytes(b"video")
+        out = tmp_path / "faded.mp4"
+
+        with pytest.raises(FFmpegError, match="empty segment"):
+            apply_segment_fades(src, out, [], fade_seconds=0.5)
+
+    def test_missing_ffmpeg_raises(self, tmp_path: Path) -> None:
+        src = tmp_path / "concat.mp4"
+        src.write_bytes(b"video")
+        out = tmp_path / "faded.mp4"
+
+        with (
+            patch("utils.ffmpeg.subprocess.run", side_effect=FileNotFoundError),
+            pytest.raises(FFmpegError, match="ffmpeg not found"),
+        ):
+            apply_segment_fades(src, out, [10.0], fade_seconds=0.5)
