@@ -119,17 +119,6 @@ Useful flags:
 
 Without Azure credentials the script **exits** unless you pass **`--local`**.
 
-**Alternative — `ingest.py`**
-
-```bash
-source .venv/bin/activate
-python ingest.py
-```
-
-Interactive catalog flow: YouTube URL or text query → download → same pipeline stages. Writes to **`pipeline_workspace/<video_id>/`** when using local storage, or to the same **videos** / **pipeline** blob layout when **`STORAGE_BACKEND=azure`** and a connection string is configured.
-
-Each match only needs to be ingested once. Stages are cached — re-runs skip work that already completed.
-
 ### Step 2 — Generate highlights (on demand)
 
 Point `API_BASE_URL` at your running API (default `http://localhost:8000`), then:

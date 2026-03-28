@@ -15,6 +15,25 @@ from utils.job_store import InMemoryJobStore
 _VALID_MATCH = "istanbul-2005"
 _OTHER_MATCH = "barcelona-psg-2017"
 
+_MOCK_CATALOG = [
+    {
+        "match_id": _VALID_MATCH,
+        "title": "Istanbul 2005",
+        "home_team": "Liverpool",
+        "away_team": "AC Milan",
+        "competition": "Champions League",
+        "season_label": "2005",
+    },
+    {
+        "match_id": _OTHER_MATCH,
+        "title": "Barcelona vs PSG 2017",
+        "home_team": "Barcelona",
+        "away_team": "PSG",
+        "competition": "Champions League",
+        "season_label": "2017",
+    },
+]
+
 
 @pytest.fixture()
 def store() -> InMemoryJobStore:
@@ -44,6 +63,7 @@ def client(
         patch("api.dependencies._store", store),
         patch("api.dependencies._queue", queue),
         patch("api.dependencies._storage", mock_storage),
+        patch("api.routes.catalog.list_matches", return_value=_MOCK_CATALOG),
     ):
         from api.app import create_app
 
