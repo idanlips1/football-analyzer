@@ -119,17 +119,6 @@ Useful flags:
 
 Without Azure credentials the script **exits** unless you pass **`--local`**.
 
-**Alternative — `ingest.py`**
-
-```bash
-source .venv/bin/activate
-python ingest.py
-```
-
-Interactive catalog flow: YouTube URL or text query → download → same pipeline stages. Writes to **`pipeline_workspace/<video_id>/`** when using local storage, or to the same **videos** / **pipeline** blob layout when **`STORAGE_BACKEND=azure`** and a connection string is configured.
-
-Each match only needs to be ingested once. Stages are cached — re-runs skip work that already completed.
-
 ### Step 2 — Generate highlights (on demand)
 
 Point `API_BASE_URL` at your running API (default `http://localhost:8000`), then:
@@ -191,6 +180,9 @@ bandit -r . -c pyproject.toml
 ## Azure
 
 - **Deploy the API/worker:** `docs/DEPLOY.md` and `scripts/deploy_azure_env.sh`
+  - Full deploy (first-time setup or infra changes): `./scripts/deploy_azure_env.sh`
+  - Code-only deploy (routine updates, no infra changes): `./scripts/deploy_azure_env.sh --code-only`
+    Skips provider registration and ARM template re-deployment — just builds and pushes the Docker image and updates both container apps. Use this when you only changed application code.
 - **Add matches to storage (operator):** `python scripts/ingest_youtube_query.py "…"` with `AZURE_STORAGE_CONNECTION_STRING` (or Azure CLI–discoverable storage account settings as in the script docstring)
 - **Teammate access (RBAC):** `docs/AZURE_RBAC.md`
 
