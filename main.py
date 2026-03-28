@@ -19,6 +19,13 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000").rstrip("/")
 
 
+def _print_job_done_hint() -> None:
+    print(
+        "  Next: open Watch in your browser or use Download to save the file; "
+        "then type another highlights request, 'back' for another game, or 'quit'.\n"
+    )
+
+
 def _prompt(msg: str, default: str = "") -> str:
     try:
         value = input(msg).strip()
@@ -85,8 +92,9 @@ def _poll_job(poll_url: str, job_id: str) -> None:
                     print(f"  Download:    {result.get('download_url')}")
                     print(
                         f"  Duration: {result.get('duration_seconds', 0)}s | "
-                        f"Clips: {result.get('clip_count', 0)}\n"
+                        f"Clips: {result.get('clip_count', 0)}"
                     )
+                    _print_job_done_hint()
                     return
                 elif status == "failed":
                     print(f"\n  Job failed: {job_data.get('error')}\n", file=sys.stderr)
@@ -128,7 +136,8 @@ def _game_repl(match: dict) -> None:
                 result = job_info.get("result", {})
                 watch_url = f"{API_BASE_URL}/watch/{job_id}"
                 print(f"  Watch here:  {watch_url}")
-                print(f"  Download:    {result.get('download_url')}\n")
+                print(f"  Download:    {result.get('download_url')}")
+                _print_job_done_hint()
             else:
                 _poll_job(job_info["poll_url"], job_id)
 
