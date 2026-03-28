@@ -60,7 +60,7 @@ def create_app() -> FastAPI:
 </head>
 <body>
   <h1>{title}</h1>
-  <video src="{sas_url}" controls></video>
+  <video src="{sas_url}" controls preload="metadata"></video>
 </body>
 </html>"""
         return HTMLResponse(body)
