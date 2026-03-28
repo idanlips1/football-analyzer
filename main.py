@@ -9,7 +9,12 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any, cast
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000").rstrip("/")
 
@@ -26,10 +31,14 @@ def _prompt(msg: str, default: str = "") -> str:
 def _display_game_list(matches: list[dict]) -> None:
     print()
     for i, m in enumerate(matches, 1):
-        print(
-            f"  [{i}] {m['home_team']} vs {m['away_team']}  |  "
-            f"{m['competition']}  |  {m['season_label']}"
-        )
+        if "home_team" in m:
+            label = (
+                f"{m['home_team']} vs {m['away_team']}  |  "
+                f"{m.get('competition', '')}  |  {m.get('season_label', '')}"
+            )
+        else:
+            label = m["match_id"]
+        print(f"  [{i}] {label}")
     print()
 
 
@@ -93,7 +102,11 @@ def _poll_job(poll_url: str) -> None:
 
 def _game_repl(match: dict) -> None:
     """Inner REPL for a chosen game. Returns when user types 'back'."""
-    print(f"\n  {match['home_team']} vs {match['away_team']} — {match['season_label']}")
+    if "home_team" in match:
+        header = f"{match['home_team']} vs {match['away_team']} — {match.get('season_label', '')}"
+    else:
+        header = match["match_id"]
+    print(f"\n  {header}")
     print("  Type your highlights request, 'back' to pick another game, or 'quit'.\n")
 
     while True:

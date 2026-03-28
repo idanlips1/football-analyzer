@@ -1,15 +1,6 @@
 {
   "matches": [
     {
-      "match_id": "full-match-liverpool-3-1-manchester-city-fa-community-shield-2022-23",
-      "title": "FULL MATCH | Liverpool 3-1 Manchester City | FA Community Shield 2022-23",
-      "home_team": "",
-      "away_team": "",
-      "competition": "Unknown",
-      "season_label": "2022",
-      "fixture_id": 862929
-    },
-    {
       "match_id": "full-match-manchester-city-v-liverpool-fa-community-shield-2022",
       "title": "FULL MATCH | Manchester City v Liverpool | FA Community Shield 2022",
       "home_team": "",
@@ -17,6 +8,15 @@
       "competition": "",
       "season_label": "2022",
       "fixture_id": 862929
+    },
+    {
+      "match_id": "man-utd-v-liverpool-fa-cup-2024",
+      "title": "FULL MATCH | Manchester United v Liverpool | Quarter-final | Emirates FA Cup 2023-24",
+      "home_team": "",
+      "away_team": "",
+      "competition": "",
+      "season_label": "2023",
+      "fixture_id": 1180025
     }
   ]
 }
