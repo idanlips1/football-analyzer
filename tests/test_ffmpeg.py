@@ -224,3 +224,66 @@ class TestApplySegmentFades:
             pytest.raises(FFmpegError, match="ffmpeg not found"),
         ):
             apply_segment_fades(src, out, [10.0], fade_seconds=0.5)
+
+
+class TestScaleFilter:
+    """Scale filter is applied in re-encode paths when CLIP_SCALE is set."""
+
+    def test_apply_segment_fades_includes_scale_when_set(self, tmp_path: Path) -> None:
+        src = tmp_path / "src.mp4"
+        src.write_bytes(b"video")
+        out = tmp_path / "out.mp4"
+
+        with (
+            patch("utils.ffmpeg.subprocess.run", side_effect=_fake_run_success) as mock,
+            patch("config.settings.CLIP_SCALE", "1280:720"),
+        ):
+            apply_segment_fades(src, out, [10.0], fade_seconds=0.5)
+
+        cmd = mock.call_args[0][0]
+        vf = cmd[cmd.index("-vf") + 1]
+        assert "scale=1280:720" in vf
+
+    def test_apply_segment_fades_omits_scale_when_empty(self, tmp_path: Path) -> None:
+        src = tmp_path / "src.mp4"
+        src.write_bytes(b"video")
+        out = tmp_path / "out.mp4"
+
+        with (
+            patch("utils.ffmpeg.subprocess.run", side_effect=_fake_run_success) as mock,
+            patch("config.settings.CLIP_SCALE", ""),
+        ):
+            apply_segment_fades(src, out, [10.0], fade_seconds=0.5)
+
+        cmd = mock.call_args[0][0]
+        vf = cmd[cmd.index("-vf") + 1]
+        assert "scale=" not in vf
+
+    def test_cut_clip_reencode_includes_scale_when_set(self, tmp_path: Path) -> None:
+        src = tmp_path / "src.mp4"
+        src.write_bytes(b"video")
+        out = tmp_path / "out.mp4"
+
+        with (
+            patch("utils.ffmpeg.subprocess.run", side_effect=_fake_run_success) as mock,
+            patch("config.settings.CLIP_SCALE", "1280:720"),
+        ):
+            cut_clip(src, 10.0, 20.0, out, fade_duration=0.5)
+
+        cmd = mock.call_args[0][0]
+        vf = cmd[cmd.index("-vf") + 1]
+        assert "scale=1280:720" in vf
+
+    def test_cut_clip_stream_copy_never_has_scale(self, tmp_path: Path) -> None:
+        src = tmp_path / "src.mp4"
+        src.write_bytes(b"video")
+        out = tmp_path / "out.mp4"
+
+        with (
+            patch("utils.ffmpeg.subprocess.run", side_effect=_fake_run_success) as mock,
+            patch("config.settings.CLIP_SCALE", "1280:720"),
+        ):
+            cut_clip(src, 10.0, 20.0, out, fade_duration=0.0)
+
+        cmd = mock.call_args[0][0]
+        assert "scale=" not in " ".join(cmd)
