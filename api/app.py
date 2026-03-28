@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import html as html_module
+from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from api.dependencies import get_job_store
 from api.routes import catalog, jobs
@@ -19,7 +21,7 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def api_key_auth(request: Request, call_next):  # type: ignore[no-untyped-def]
         # Skip auth for health check and browser-facing watch page
-        if request.url.path == "/api/v1/health" or request.url.path.startswith("/watch/"):
+        if not request.url.path.startswith("/api/") or request.url.path == "/api/v1/health":
             return await call_next(request)
 
         api_key = request.headers.get("X-API-Key")
@@ -67,6 +69,17 @@ def create_app() -> FastAPI:
 
     app.include_router(jobs.router, prefix="/api/v1")
     app.include_router(catalog.router, prefix="/api/v1")
+
+    # Serve built frontend if it exists (production).
+    # IMPORTANT: This must come AFTER all router includes and explicit routes
+    # (/api/*, /watch/*) so the catch-all doesn't shadow them.
+    _frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+    if _frontend_dist.is_dir():
+        app.mount("/assets", StaticFiles(directory=_frontend_dist / "assets"), name="static")
+
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def spa_fallback(full_path: str) -> FileResponse:
+            return FileResponse(_frontend_dist / "index.html")
 
     return app
 
