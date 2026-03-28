@@ -50,7 +50,7 @@ def _pick_match(storage: LocalStorage) -> str | None:
     games = _list_local_games(storage)
     if not games:
         print("\n  No ingested games found in pipeline_workspace/.")
-        print("  Run `python ingest.py` first to prepare a match.\n")
+        print("  Run `python scripts/ingest_youtube_query.py` first to prepare a match.\n")
         return None
     print("\n  Available local matches:\n")
     for i, g in enumerate(games, 1):
@@ -110,7 +110,7 @@ def _run_pipeline_local(
     except Exception:
         print(
             f"\n  Error: No aligned_events.json for '{match_id}'.\n"
-            "  Run `python ingest.py` first.\n",
+            "  Run `python scripts/ingest_youtube_query.py` first.\n",
             file=sys.stderr,
         )
         raise
@@ -247,7 +247,7 @@ def main() -> None:
         storage.read_json(match_id, "game.json")
     except Exception:
         print(f"\n  Error: No game.json for '{match_id}' in pipeline_workspace/.")
-        print("  Run `python ingest.py` first.\n")
+        print("  Run `python scripts/ingest_youtube_query.py` first.\n")
         sys.exit(1)
 
     query = args.query
