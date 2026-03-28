@@ -50,12 +50,16 @@ from catalog.loader import CatalogMatch, get_match  # noqa: E402
 from utils.logger import setup_logging  # noqa: E402
 from utils.storage import StorageBackend  # noqa: E402
 
+_MAX_MATCH_ID_LEN = 63  # API schema: ^[a-z0-9][a-z0-9-]{0,62}$
+
 
 def _slugify(raw: str) -> str:
     s = raw.strip().lower()
-    s = re.sub(r"[’'`]", "", s)
+    s = re.sub(r"[‘’`]", "", s)
     s = re.sub(r"[^a-z0-9]+", "-", s)
     s = re.sub(r"-{2,}", "-", s).strip("-")
+    if len(s) > _MAX_MATCH_ID_LEN:
+        s = s[:_MAX_MATCH_ID_LEN].rstrip("-")
     return s or "match"
 
 
