@@ -33,13 +33,18 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterable
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
+
+from dotenv import load_dotenv  # noqa: E402
+
+load_dotenv(_ROOT / ".env")
 
 from catalog.loader import CatalogMatch, get_match  # noqa: E402
 from utils.logger import setup_logging  # noqa: E402
@@ -153,7 +158,9 @@ def _keyvault_secret(vault_name: str, secret_name: str) -> str:
 def _ensure_api_keys_from_env_or_kv() -> None:
     """Ensure required API keys exist in env; if missing, fetch from Azure Key Vault via az."""
     # We intentionally avoid printing any secret values.
-    missing = [k for k in ("ASSEMBLYAI_API_KEY", "API_FOOTBALL_KEY") if not os.environ.get(k, "").strip()]
+    missing = [
+        k for k in ("ASSEMBLYAI_API_KEY", "API_FOOTBALL_KEY") if not os.environ.get(k, "").strip()
+    ]
     if not missing:
         return
 
@@ -187,8 +194,16 @@ def _ensure_api_keys_from_env_or_kv() -> None:
         )
 
 
-def _search_youtube(query: str, *, limit: int) -> list[dict[str, Any]]:
+def _search_youtube(
+    query: str,
+    *,
+    limit: int,
+    min_duration: int = 1200,
+) -> list[dict[str, Any]]:
     import yt_dlp  # type: ignore[import-not-found]
+
+    # Fetch more results than requested so we still have enough after filtering short videos.
+    fetch_limit = limit * 2
 
     ydl_opts: dict[str, Any] = {
         "quiet": True,
@@ -198,13 +213,15 @@ def _search_youtube(query: str, *, limit: int) -> list[dict[str, Any]]:
         "socket_timeout": 30,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
+        info = ydl.extract_info(f"ytsearch{fetch_limit}:{query}", download=False)
     entries = [e for e in (info.get("entries") or []) if e]
     out: list[dict[str, Any]] = []
     for e in entries:
         vid = str(e.get("id") or "")
         title = str(e.get("title") or "")
         dur = int(e.get("duration") or 0)
+        if dur < min_duration:
+            continue
         uploader = str(e.get("uploader") or e.get("channel") or "")
         out.append(
             {
@@ -215,7 +232,7 @@ def _search_youtube(query: str, *, limit: int) -> list[dict[str, Any]]:
                 "uploader": uploader,
             }
         )
-    return out
+    return out[:limit]
 
 
 def _pick_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any]:
@@ -240,7 +257,7 @@ def _pick_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any]:
         if 0 <= idx < len(candidates):
             chosen = candidates[idx]
             dur = _fmt_duration(int(chosen.get("duration") or 0))
-            print(f"\nChosen:\n  {dur}  {chosen.get('title','')}\n  {chosen.get('url','')}\n")
+            print(f"\nChosen:\n  {dur}  {chosen.get('title', '')}\n  {chosen.get('url', '')}\n")
             ok = input("Is this the intended video? [Y/n] ").strip().lower()
             if ok in ("", "y", "yes"):
                 return chosen
@@ -354,7 +371,7 @@ def _resolve_fixture_id_interactive(user_query: str, video_title: str) -> int | 
         print(f"\nFixture auto-resolution failed: {exc}")
         res = None
 
-    if res is not None and getattr(res, "fixture_id", None):
+    if res is not None and res.fixture_id is not None:
         try:
             return int(res.fixture_id)
         except Exception:
@@ -427,9 +444,8 @@ def _storage_for_run() -> StorageBackend:
         AZURE_BLOB_CONTAINER_PIPELINE,
         AZURE_BLOB_CONTAINER_VIDEOS,
         AZURE_STORAGE_CONNECTION_STRING,
-        PIPELINE_WORKSPACE,
     )
-    from utils.storage import BlobStorage, LocalStorage
+    from utils.storage import BlobStorage
 
     # Important: don't rely on config.settings.STORAGE_BACKEND here.
     # When AZURE_STORAGE_CONNECTION_STRING isn't set, config defaults STORAGE_BACKEND to "local"
@@ -475,7 +491,9 @@ def _storage_for_run_local_ok(*, allow_local: bool) -> StorageBackend:
     return _storage_for_run()
 
 
-def _confirm_kickoffs_interactive(auto_first: float | None, auto_second: float | None) -> tuple[float, float]:
+def _confirm_kickoffs_interactive(
+    auto_first: float | None, auto_second: float | None
+) -> tuple[float, float]:
     def _parse_timestamp(raw: str) -> float | None:
         raw = raw.strip()
         if ":" in raw:
@@ -496,7 +514,11 @@ def _confirm_kickoffs_interactive(auto_first: float | None, auto_second: float |
     def _confirm_one(label: str, auto: float | None) -> float:
         if auto is not None:
             mins, secs = divmod(int(auto), 60)
-            answer = input(f"  {label} kickoff detected at {mins}:{secs:02d} — correct? [Y/n] ").strip().lower()
+            answer = (
+                input(f"  {label} kickoff detected at {mins}:{secs:02d} — correct? [Y/n] ")
+                .strip()
+                .lower()
+            )
             if answer in ("", "y", "yes"):
                 return auto
         else:
@@ -520,6 +542,7 @@ def _run_ingest(
     *,
     user_query: str,
     video_title: str,
+    fixture_id: int | None = None,
 ) -> None:
     from pipeline.catalog_pipeline import CatalogPipelineError
     from pipeline.event_aligner import align_events
@@ -528,8 +551,8 @@ def _run_ingest(
     from pipeline.transcription import transcribe
     from utils.storage import StorageError
 
-    # If the video+metadata already exist in storage (common when re-running after a later-stage failure),
-    # avoid re-uploading or re-downloading. We'll proceed from the existing blobs.
+    # If the video+metadata already exist in storage (common when re-running after
+    # a later-stage failure), skip re-uploading. Proceed from existing blobs.
     metadata: dict[str, Any] | None = None
     try:
         existing_meta = storage.read_json(match_id, "metadata.json")
@@ -555,6 +578,10 @@ def _run_ingest(
 
     if k_first is None or k_second is None:
         raise CatalogPipelineError("Could not confirm kickoff timestamps.")
+
+    # Use fixture_id from catalog if metadata doesn't already have it.
+    if metadata.get("fixture_id") is None and fixture_id is not None:
+        metadata["fixture_id"] = fixture_id
 
     if metadata.get("fixture_id") is None:
         print("\n[4/7] Resolving fixture_id…")
@@ -638,7 +665,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         action="store_true",
         help="Allow using local pipeline_workspace/ if Azure is unavailable (dangerous).",
     )
-    p.add_argument("--no-ingest", action="store_true", help="Only add catalog + download (no ingest)")
+    p.add_argument(
+        "--no-ingest", action="store_true", help="Only add catalog + download (no ingest)"
+    )
     p.add_argument(
         "--resume",
         action="store_true",
@@ -712,6 +741,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             storage,
             user_query=args.youtube_query,
             video_title=title,
+            fixture_id=entry.fixture_id,
         )
 
     print("\nNext:")
