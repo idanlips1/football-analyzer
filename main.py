@@ -26,10 +26,8 @@ def _prompt(msg: str, default: str = "") -> str:
 def _display_game_list(matches: list[dict]) -> None:
     print()
     for i, m in enumerate(matches, 1):
-        print(
-            f"  [{i}] {m['home_team']} vs {m['away_team']}  |  "
-            f"{m['competition']}  |  {m['season_label']}"
-        )
+        mid = m.get("match_id", "")
+        print(f"  [{i}] {mid}" if mid else f"  [{i}] (missing match_id)")
     print()
 
 
@@ -93,7 +91,7 @@ def _poll_job(poll_url: str) -> None:
 
 def _game_repl(match: dict) -> None:
     """Inner REPL for a chosen game. Returns when user types 'back'."""
-    print(f"\n  {match['home_team']} vs {match['away_team']} — {match['season_label']}")
+    print(f"\n  Match: {match.get('match_id', '')}")
     print("  Type your highlights request, 'back' to pick another game, or 'quit'.\n")
 
     while True:
