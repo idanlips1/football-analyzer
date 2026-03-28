@@ -191,6 +191,9 @@ bandit -r . -c pyproject.toml
 ## Azure
 
 - **Deploy the API/worker:** `docs/DEPLOY.md` and `scripts/deploy_azure_env.sh`
+  - Full deploy (first-time setup or infra changes): `./scripts/deploy_azure_env.sh`
+  - Code-only deploy (routine updates, no infra changes): `./scripts/deploy_azure_env.sh --code-only`
+    Skips provider registration and ARM template re-deployment — just builds and pushes the Docker image and updates both container apps. Use this when you only changed application code.
 - **Add matches to storage (operator):** `python scripts/ingest_youtube_query.py "…"` with `AZURE_STORAGE_CONNECTION_STRING` (or Azure CLI–discoverable storage account settings as in the script docstring)
 - **Teammate access (RBAC):** `docs/AZURE_RBAC.md`
 
