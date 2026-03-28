@@ -66,10 +66,13 @@ MERGE_GAP_SECONDS: float = 5.0
 FADE_DURATION_SECONDS: float = 0.5
 
 # Encoding quality for re-encoded clips (lower = better quality, 18 ≈ visually lossless)
-CLIP_CRF: int = 18
+CLIP_CRF: int = 26
 
 # Audio bitrate for re-encoded clips
-CLIP_AUDIO_BITRATE: str = "192k"
+CLIP_AUDIO_BITRATE: str = "128k"
+
+# Output resolution for re-encoded clips — "WxH" string, e.g. "1280:720". Omit to disable.
+CLIP_SCALE: str = "1280:720"
 
 # API-Football (api-sports.io) — header-based auth with x-rapidapi-key
 API_FOOTBALL_KEY: str = os.environ.get("API_FOOTBALL_KEY", "")

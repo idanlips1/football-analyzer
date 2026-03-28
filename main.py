@@ -69,7 +69,7 @@ def _submit_job(match_id: str, query: str) -> dict[str, Any] | None:
     return None
 
 
-def _poll_job(poll_url: str) -> None:
+def _poll_job(poll_url: str, job_id: str) -> None:
     url = f"{API_BASE_URL}{poll_url}"
     print("\n  Job queued. Waiting for worker to process on Azure...")
     while True:
@@ -80,8 +80,9 @@ def _poll_job(poll_url: str) -> None:
 
                 if status == "completed":
                     result = job_data.get("result", {})
-                    download_url = result.get("download_url")
-                    print(f"\n  Done! Download here: {download_url}")
+                    watch_url = f"{API_BASE_URL}/watch/{job_id}"
+                    print(f"\n  Watch here:  {watch_url}")
+                    print(f"  Download:    {result.get('download_url')}")
                     print(
                         f"  Duration: {result.get('duration_seconds', 0)}s | "
                         f"Clips: {result.get('clip_count', 0)}\n"
@@ -121,12 +122,15 @@ def _game_repl(match: dict) -> None:
 
         job_info = _submit_job(match["match_id"], raw)
         if job_info:
+            job_id = job_info.get("job_id", "")
             if "status" in job_info and job_info["status"] == "completed":
                 print("\n  Job instantly found in cache!")
                 result = job_info.get("result", {})
-                print(f"  Done! Download here: {result.get('download_url')}\n")
+                watch_url = f"{API_BASE_URL}/watch/{job_id}"
+                print(f"  Watch here:  {watch_url}")
+                print(f"  Download:    {result.get('download_url')}\n")
             else:
-                _poll_job(job_info["poll_url"])
+                _poll_job(job_info["poll_url"], job_id)
 
 
 def run() -> None:

@@ -117,7 +117,7 @@ def cut_clip(
     Returns *output_path* on success.
     Raises FFmpegError if the cut fails.
     """
-    from config.settings import CLIP_AUDIO_BITRATE, CLIP_CRF
+    from config.settings import CLIP_AUDIO_BITRATE, CLIP_CRF, CLIP_SCALE
 
     duration = end_seconds - start_seconds
 
@@ -134,7 +134,15 @@ def cut_clip(
             "-t",
             f"{duration:.3f}",
             "-vf",
-            f"fade=t=in:st=0:d={fade:.3f},fade=t=out:st={fade_out_start:.3f}:d={fade:.3f}",
+            ",".join(
+                filter(
+                    None,
+                    [
+                        f"fade=t=in:st=0:d={fade:.3f},fade=t=out:st={fade_out_start:.3f}:d={fade:.3f}",
+                        f"scale={CLIP_SCALE}" if CLIP_SCALE else "",
+                    ],
+                )
+            ),
             "-af",
             f"afade=t=in:st=0:d={fade:.3f},afade=t=out:st={fade_out_start:.3f}:d={fade:.3f}",
             "-c:v",
@@ -241,7 +249,7 @@ def apply_segment_fades(
     Returns *output_path* on success.
     Raises FFmpegError on failure or if *segment_durations* is empty.
     """
-    from config.settings import CLIP_AUDIO_BITRATE, CLIP_CRF
+    from config.settings import CLIP_AUDIO_BITRATE, CLIP_CRF, CLIP_SCALE
 
     if not segment_durations:
         raise FFmpegError("apply_segment_fades called with empty segment list")
@@ -272,6 +280,9 @@ def apply_segment_fades(
             f":enable='between(t,{fade_out_start:.3f},{seg_end:.3f})'"
         )
         offset += dur
+
+    if CLIP_SCALE:
+        vf_parts.append(f"scale={CLIP_SCALE}")
 
     cmd = [
         "ffmpeg",
