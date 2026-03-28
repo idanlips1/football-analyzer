@@ -74,7 +74,7 @@ def run_catalog_pipeline(
         game = GameState.from_dict(storage.read_json(match_id, "game.json"))
     except Exception as exc:
         raise CatalogPipelineError(
-            f"Missing ingestion data for {match_id}. Run ingest.py first."
+            f"Missing ingestion data for {match_id}. Run scripts/ingest_youtube_query.py first."
         ) from exc
 
     if progress_callback:
@@ -84,13 +84,14 @@ def run_catalog_pipeline(
         aligned_data = storage.read_json(match_id, "aligned_events.json")
     except Exception as exc:
         raise CatalogPipelineError(
-            f"Missing aligned events for {match_id}. Run ingest.py first."
+            f"Missing aligned events for {match_id}. Run scripts/ingest_youtube_query.py first."
         ) from exc
 
     aligned_events = [AlignedEvent.from_dict(e) for e in aligned_data.get("events", [])]
     if not aligned_events:
         raise CatalogPipelineError(
-            f"aligned_events.json for {match_id} is empty or stale. Re-run ingest.py."
+            f"aligned_events.json for {match_id} is empty or stale. "
+            "Re-run scripts/ingest_youtube_query.py."
         )
 
     player_names = sorted({name for e in aligned_events for name in [e.player, e.assist] if name})
