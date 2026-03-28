@@ -51,6 +51,15 @@ def test_watch_queued_job_returns_404(client: TestClient, store: InMemoryJobStor
     assert response.status_code == 404
 
 
+def test_watch_failed_job_returns_404(client: TestClient, store: InMemoryJobStore) -> None:
+    job = Job(match_id="test", highlights_query="goals")
+    job.status = JobStatus.FAILED
+    job.error = "pipeline error"
+    store.create(job)
+    response = client.get(f"/watch/{job.job_id}")
+    assert response.status_code == 404
+
+
 def test_watch_completed_job_returns_html(client: TestClient, store: InMemoryJobStore) -> None:
     job = _completed_job(store)
     response = client.get(f"/watch/{job.job_id}")
