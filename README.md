@@ -1,5 +1,5 @@
 # Football Highlights Generator
-
+# Try it out here **[MatchCut](https://football-hl-api.graypond-9bb50a2e.germanywestcentral.azurecontainerapps.io/)**
 Builds a highlights video from a full football match by combining **[API-Football](https://www.api-football.com/)** event data (goals, cards, VAR, etc.) with **commentary transcription** to align match minutes to video time, then cuts and merges clips with **FFmpeg**.
 
 The pipeline is split into two stages:
